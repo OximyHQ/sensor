@@ -258,6 +258,10 @@ export SENTRY_PROJECT="your-project"
 
 **CI:** Add `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, and `SENTRY_PROJECT` as GitHub repository secrets.
 
+## Enforcement Pipeline
+
+`_parse_sensor_config()` must include `"enforcementPolicies": data.get("enforcementPolicies")` in its return dict — if omitted, the caller's `config.get("enforcementPolicies")` returns `None`, the guard fails, `update_policies()` is never called, and `_policies = []` (enforcement never fires). The startup `configure()` block also needs an explicit `update_policies()` call since the refresh loop has one but startup didn't.
+
 ## CA Certificate
 
 Apps use `~/.mitmproxy/oximy-ca-cert.pem` (auto-generated on first run via `CONF_BASENAME = "oximy"` in `mitmproxy/options.py`). If browsers show cert errors, install and trust the cert, then restart the browser.

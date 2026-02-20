@@ -1748,6 +1748,7 @@ def _parse_sensor_config(raw: dict, addon_instance=None) -> dict:
         "allowed_host_origins": data.get("allowed_host_origins", []),
         "localDataSources": data.get("localDataSources", {}),
         "tenantId": data.get("tenantId"),
+        "enforcementPolicies": data.get("enforcementPolicies"),
     }
 
 
@@ -3588,6 +3589,11 @@ class OximyAddon:
         self._allowed_host_origins = tuple(sensor_config.get("allowed_host_origins", []))
         # Convert parsers to lowercase set for O(1) case-insensitive lookup
         self._apps_with_parsers = {p.lower() for p in app_origins.get("apps_with_parsers", [])}
+
+        # Load enforcement policies from startup config
+        enforcement_policies = sensor_config.get("enforcementPolicies")
+        if enforcement_policies is not None:
+            self._enforcement.update_policies(enforcement_policies)
 
         # Load unknown apps cache for daily rate limiting
         self._no_parser_apps_cache = _load_no_parser_apps_cache()
