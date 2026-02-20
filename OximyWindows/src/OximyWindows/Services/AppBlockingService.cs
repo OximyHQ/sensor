@@ -121,9 +121,12 @@ public class AppBlockingService
             var current = Process.GetProcesses();
             foreach (var p in current)
             {
-                if (_knownPids.Contains(p.Id)) continue;
-                _knownPids.Add(p.Id);
-                CheckAndEnforce(p.ProcessName, p.Id);
+                using (p)
+                {
+                    if (_knownPids.Contains(p.Id)) continue;
+                    _knownPids.Add(p.Id);
+                    CheckAndEnforce(p.ProcessName, p.Id);
+                }
             }
         }
         catch (Exception ex)
