@@ -25,7 +25,7 @@ def write_suggestion_from_server(suggestion: dict) -> None:
             "name": suggestion.get("playbookName", ""),
             "description": suggestion.get("playbookDescription", ""),
             "category": suggestion.get("playbookCategory", ""),
-            "prompt_template": suggestion.get("promptTemplate", ""),
+            "promptTemplate": suggestion.get("promptTemplate", ""),
         },
         "confidence": suggestion.get("confidence", 0),
         "createdAt": datetime.now(timezone.utc).isoformat(),

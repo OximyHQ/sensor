@@ -64,7 +64,7 @@ class TestWriteSuggestionFromServer:
         assert data["playbook"]["name"] == "Code Review Checklist"
         assert data["playbook"]["description"] == "A checklist for thorough code reviews"
         assert data["playbook"]["category"] == "coding"
-        assert data["playbook"]["prompt_template"] == "Review this code for {{focus_area}}"
+        assert data["playbook"]["promptTemplate"] == "Review this code for {{focus_area}}"
         assert data["confidence"] == 0.92
         assert data["status"] == "pending"
         assert "createdAt" in data
