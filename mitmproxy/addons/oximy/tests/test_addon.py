@@ -13,8 +13,6 @@ import os
 import re
 
 # Import the functions under test
-import subprocess
-import sys
 import time
 import urllib.error
 from pathlib import Path
@@ -22,13 +20,9 @@ from unittest.mock import MagicMock
 from unittest.mock import mock_open
 from unittest.mock import patch
 
-import pytest
-
 from mitmproxy.addons.oximy.addon import _build_url_regex
-from mitmproxy.addons.oximy.addon import _emergency_cleanup
 from mitmproxy.addons.oximy.addon import _matches_url_pattern
 from mitmproxy.addons.oximy.addon import _resolve_api_base_url
-from mitmproxy.addons.oximy.addon import _state
 from mitmproxy.addons.oximy.addon import _write_force_logout_state
 from mitmproxy.addons.oximy.addon import _write_proxy_state
 from mitmproxy.addons.oximy.addon import contains_blacklist_word
@@ -42,10 +36,8 @@ from mitmproxy.addons.oximy.addon import matches_domain
 from mitmproxy.addons.oximy.addon import matches_host_origin
 from mitmproxy.addons.oximy.addon import matches_whitelist
 from mitmproxy.addons.oximy.addon import MemoryTraceBuffer
-from mitmproxy.addons.oximy.addon import OXIMY_CA_CERT
 from mitmproxy.addons.oximy.addon import OXIMY_STATE_FILE
 from mitmproxy.addons.oximy.addon import OximyAddon
-from mitmproxy.addons.oximy.addon import PROXY_HOST
 from mitmproxy.addons.oximy.addon import TLSPassthrough
 
 # =============================================================================
