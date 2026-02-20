@@ -499,7 +499,15 @@ public class MitmService : IDisposable
 
         // Stop enforcement so it doesn't fight the fail-open proxy disable.
         // Enforcement will be re-enabled when mitmproxy successfully restarts.
-        ProxyEnforcementService.Instance.StopEnforcement();
+        // Each call is isolated so a failure in one doesn't block the other.
+        try
+        {
+            ProxyEnforcementService.Instance.StopEnforcement();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[MitmService] Failed to stop enforcement on exit: {ex.Message}");
+        }
         try
         {
             BrowserPolicyService.DisablePolicies();
