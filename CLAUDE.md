@@ -20,7 +20,7 @@ Run tests before committing or building:
 python -m pytest mitmproxy/addons/oximy/tests/ -v --tb=short
 ```
 
-Expected: `271 passed`. Run specific files or patterns with `-k`:
+Expected: `663 passed`. Run specific files or patterns with `-k`:
 
 ```bash
 python -m pytest mitmproxy/addons/oximy/tests/test_addon.py -v
