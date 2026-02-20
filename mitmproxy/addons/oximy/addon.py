@@ -4502,6 +4502,8 @@ class OximyAddon:
                     "severity": violation.severity,
                     "detected_type": violation.detected_type,
                     "retry_allowed": violation.retry_allowed,
+                    "detection_method": violation.detection_method,
+                    "confidence_score": violation.confidence_score,
                 },
                 "request": {
                     "method": flow.request.method,
@@ -4531,6 +4533,8 @@ class OximyAddon:
                 "path": violation.path[:200],
                 "method": violation.method,
                 "bundle_id": violation.bundle_id,
+                "detection_method": violation.detection_method,
+                "confidence_score": violation.confidence_score,
             }
             with self._violation_report_lock:
                 self._pending_violations.append(entry)
