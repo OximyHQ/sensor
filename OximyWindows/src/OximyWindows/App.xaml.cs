@@ -164,6 +164,10 @@ public partial class App : Application
         // Create and show main window (hidden, hosts tray icon)
         _mainWindow = new MainWindow();
 
+        // Explicitly set Application.Current.MainWindow so services can access it
+        // (window is tray-only and never shown, so WPF doesn't set this automatically)
+        MainWindow = _mainWindow;
+
         // Subscribe to service events
         HeartbeatService.LogoutRequested += OnLogoutRequested;
         HeartbeatService.RestartProxyRequested += OnRestartProxyRequested;
@@ -173,6 +177,13 @@ public partial class App : Application
         RemoteStateService.Start();
         RemoteStateService.ForceLogoutRequested += OnForceLogoutRequested;
         RemoteStateService.SensorEnabledChanged += OnSensorStateChanged;
+
+        // Start enforcement services (violation toasts, suggestion panels, app blocking)
+        ViolationService.Instance.NewViolationDetected += OnViolationDetected;
+        SuggestionService.Instance.NewSuggestionAvailable += OnSuggestionAvailable;
+        AppBlockingService.Instance.Start(RemoteStateService.Instance);
+        ViolationService.Instance.Start();
+        SuggestionService.Instance.Start();
 
         // Auto-enable launch at startup on first run
         StartupService.CheckAndAutoEnableOnFirstLaunch();
@@ -249,6 +260,16 @@ public partial class App : Application
                 ProxyService.DisableProxy();
             }
         });
+    }
+
+    private void OnViolationDetected(object? sender, ViolationEntry v)
+    {
+        Dispatcher.BeginInvoke(() => new Views.ViolationNotificationWindow(v).Show());
+    }
+
+    private void OnSuggestionAvailable(object? sender, PlaybookSuggestion p)
+    {
+        Dispatcher.BeginInvoke(() => new Views.SuggestionNotificationWindow(p).Show());
     }
 
     /// <summary>
@@ -448,49 +469,43 @@ public partial class App : Application
 
     /// <summary>
     /// Start all services on app relaunch when already connected (saved credentials).
-    /// Certificate must be installed before monitoring starts.
+    /// Checks cert first — if the file exists but isn't trusted, installs silently.
+    /// Only starts MitmService after cert is confirmed installed.
     /// </summary>
     private async Task StartServicesOnRelaunchAsync()
     {
         Debug.WriteLine("[App] Starting services on relaunch (already connected)...");
 
-        // Ensure certificate is installed — try silently if cert file exists but not in store
+        // Check cert first — if file exists but not yet trusted, try silent install
         CertificateService.CheckStatus();
         if (!CertificateService.IsCAInstalled && CertificateService.IsCAGenerated)
         {
             try
             {
                 await CertificateService.InstallCAAsync();
-                Debug.WriteLine("[App] Certificate installed on relaunch");
+                Debug.WriteLine("[App] Certificate installed silently on relaunch");
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[App] Certificate install failed on relaunch: {ex.Message}");
+                Debug.WriteLine($"[App] Certificate silent install failed on relaunch: {ex.Message}");
+                // User can install from settings — don't block service start
             }
         }
 
-        // Only start mitmproxy if certificate is installed — monitoring without a trusted
-        // cert causes SSL errors for the user and gives a false "Monitoring Active" status.
-        if (CertificateService.IsCAInstalled)
+        // Only start MitmService if cert is installed (prevents proxy-without-cert state)
+        if (!MitmService.IsRunning && CertificateService.IsCAInstalled)
         {
-            if (!MitmService.IsRunning)
+            try
             {
-                try
-                {
-                    await MitmService.StartAsync();
-                    Debug.WriteLine("[App] MitmService started on relaunch");
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[App] MitmService start failed on relaunch: {ex.Message}");
-                    OximyLogger.Log(EventCode.APP_FAIL_301, "Service start failed",
-                        new Dictionary<string, object> { ["error"] = ex.Message });
-                }
+                await MitmService.StartAsync();
+                Debug.WriteLine("[App] MitmService started on relaunch");
             }
-        }
-        else
-        {
-            Debug.WriteLine("[App] Certificate not installed — monitoring blocked until cert is installed from Settings");
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[App] MitmService start failed on relaunch: {ex.Message}");
+                OximyLogger.Log(EventCode.APP_FAIL_301, "Service start failed",
+                    new Dictionary<string, object> { ["error"] = ex.Message });
+            }
         }
 
         HeartbeatService.Start();
@@ -501,14 +516,13 @@ public partial class App : Application
 
     /// <summary>
     /// Start all services after enrollment completes.
-    /// Mitmproxy must start first to generate CA cert files, then cert is installed.
+    /// MitmService starts first (it generates the CA cert), then cert is installed.
     /// </summary>
     private async Task StartServicesAfterEnrollmentAsync()
     {
         Debug.WriteLine("[App] Starting services after enrollment...");
 
-        // Start mitmproxy first — it generates ~/.mitmproxy/oximy-ca-cert.pem on first run.
-        // Cert install cannot happen before this because the file won't exist yet.
+        // Start mitmproxy first — it generates the CA certificate file on first run
         if (!MitmService.IsRunning)
         {
             try
@@ -524,32 +538,26 @@ public partial class App : Application
             }
         }
 
-        // Install certificate — wait up to 10s for mitmproxy to generate the cert file
-        CertificateService.CheckStatus();
-        if (!CertificateService.IsCAInstalled)
+        // Wait up to 10s for the CA cert file to be generated by mitmproxy
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!CertificateService.IsCAGenerated && DateTime.UtcNow < deadline)
         {
-            var deadline = DateTime.UtcNow.AddSeconds(10);
-            while (!CertificateService.IsCAGenerated && DateTime.UtcNow < deadline)
-            {
-                await Task.Delay(500);
-                CertificateService.CheckStatus();
-            }
+            await Task.Delay(500);
+            CertificateService.CheckStatus();
+        }
 
-            if (CertificateService.IsCAGenerated)
+        // Install certificate (will prompt user via Windows UAC if needed)
+        if (!CertificateService.IsCAInstalled && CertificateService.IsCAGenerated)
+        {
+            try
             {
-                try
-                {
-                    await CertificateService.InstallCAAsync();
-                    Debug.WriteLine("[App] Certificate installed after enrollment");
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[App] Certificate install failed (user can retry from settings): {ex.Message}");
-                }
+                await CertificateService.InstallCAAsync();
+                Debug.WriteLine("[App] Certificate installed after enrollment");
             }
-            else
+            catch (Exception ex)
             {
-                Debug.WriteLine("[App] Cert file not generated within timeout — user must install from settings");
+                Debug.WriteLine($"[App] Certificate install failed (user can retry from settings): {ex.Message}");
+                // Don't block - user can install from settings later
             }
         }
 
@@ -607,6 +615,11 @@ public partial class App : Application
             // Ignore errors during shutdown
         }
 
+        // Stop enforcement services
+        ViolationService.Instance.Stop();
+        SuggestionService.Instance.Stop();
+        AppBlockingService.Instance.Stop();
+
         // Stop and dispose services
         RemoteStateService.Stop();
         MitmService.Dispose();
@@ -622,6 +635,8 @@ public partial class App : Application
         HeartbeatService.DisableProxyRequested -= OnDisableProxyRequested;
         RemoteStateService.ForceLogoutRequested -= OnForceLogoutRequested;
         RemoteStateService.SensorEnabledChanged -= OnSensorStateChanged;
+        ViolationService.Instance.NewViolationDetected -= OnViolationDetected;
+        SuggestionService.Instance.NewSuggestionAvailable -= OnSuggestionAvailable;
 
         _mutex?.ReleaseMutex();
         _mutex?.Dispose();

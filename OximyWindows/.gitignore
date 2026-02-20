@@ -22,3 +22,6 @@ TestResults/
 
 # Installer output
 installer/Output/
+
+# Secrets (never commit)
+src/OximyWindows/Secrets.cs

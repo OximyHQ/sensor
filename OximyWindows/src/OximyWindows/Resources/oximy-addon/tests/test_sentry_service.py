@@ -9,11 +9,12 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 
-from mitmproxy.addons.oximy import sentry_service
+import sentry_service
 
 
 @pytest.fixture(autouse=True)

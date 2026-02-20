@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import json
 import threading
-import time
-from unittest.mock import MagicMock, patch, ANY
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 
-from mitmproxy.addons.oximy import oximy_logger
-from mitmproxy.addons.oximy.oximy_logger import EventCode, _OximyLogger
+import oximy_logger
+from oximy_logger import _OximyLogger
+from oximy_logger import EventCode
 
 
 @pytest.fixture(autouse=True)
@@ -220,7 +221,7 @@ class TestBatching:
     def test_flush_swaps_buffer(self, configured_logger):
         """Flush should swap buffer to empty and send old entries."""
         configured_logger._bs_buffer = [{"msg": "a"}, {"msg": "b"}]
-        with patch.object(configured_logger, "_bs_send_batch") as mock_send:
+        with patch.object(configured_logger, "_bs_send_batch"):
             with patch("threading.Thread") as mock_thread_cls:
                 mock_thread = MagicMock()
                 mock_thread_cls.return_value = mock_thread
@@ -255,7 +256,7 @@ class TestHTTPSending:
 
         with patch.object(oximy_logger, "_BETTERSTACK_LOGS_TOKEN", "tok-123"), \
              patch.object(oximy_logger, "_BETTERSTACK_LOGS_HOST", "https://logs.example.com"), \
-             patch("mitmproxy.addons.oximy.oximy_logger.urllib.request.build_opener") as mock_build:
+             patch("oximy_logger.urllib.request.build_opener") as mock_build:
             mock_opener = MagicMock()
             mock_build.return_value = mock_opener
 
@@ -277,8 +278,8 @@ class TestHTTPSending:
 
         with patch.object(oximy_logger, "_BETTERSTACK_LOGS_TOKEN", "tok-123"), \
              patch.object(oximy_logger, "_BETTERSTACK_LOGS_HOST", "https://logs.example.com"), \
-             patch("mitmproxy.addons.oximy.oximy_logger.urllib.request.build_opener") as mock_build, \
-             patch("mitmproxy.addons.oximy.oximy_logger.urllib.request.ProxyHandler") as mock_ph:
+             patch("oximy_logger.urllib.request.build_opener") as mock_build, \
+             patch("oximy_logger.urllib.request.ProxyHandler") as mock_ph:
             mock_opener = MagicMock()
             mock_build.return_value = mock_opener
 
@@ -298,7 +299,7 @@ class TestFailOpen:
 
         with patch.object(oximy_logger, "_BETTERSTACK_LOGS_TOKEN", "tok-123"), \
              patch.object(oximy_logger, "_BETTERSTACK_LOGS_HOST", "https://logs.example.com"), \
-             patch("mitmproxy.addons.oximy.oximy_logger.urllib.request.build_opener") as mock_build:
+             patch("oximy_logger.urllib.request.build_opener") as mock_build:
             mock_opener = MagicMock()
             mock_opener.open.side_effect = Exception("connection refused")
             mock_build.return_value = mock_opener
@@ -313,7 +314,7 @@ class TestFailOpen:
 
         with patch.object(oximy_logger, "_BETTERSTACK_LOGS_TOKEN", "tok-123"), \
              patch.object(oximy_logger, "_BETTERSTACK_LOGS_HOST", "https://logs.example.com"), \
-             patch("mitmproxy.addons.oximy.oximy_logger.urllib.request.build_opener") as mock_build:
+             patch("oximy_logger.urllib.request.build_opener") as mock_build:
             mock_opener = MagicMock()
             mock_opener.open.side_effect = urllib.error.URLError("timeout")
             mock_build.return_value = mock_opener

@@ -55,6 +55,36 @@ public class AppConfigFlags
 }
 
 /// <summary>
+/// Enforcement rule for an app or website, delivered via remote-state.json.
+/// </summary>
+public class EnforcementRule
+{
+    [JsonPropertyName("toolId")]
+    public string ToolId { get; set; } = "";
+
+    [JsonPropertyName("toolType")]
+    public string ToolType { get; set; } = "";        // "app" | "website"
+
+    [JsonPropertyName("displayName")]
+    public string DisplayName { get; set; } = "";
+
+    [JsonPropertyName("mode")]
+    public string Mode { get; set; } = "";            // "blocked" | "warn" | "flagged"
+
+    [JsonPropertyName("message")]
+    public string? Message { get; set; }
+
+    [JsonPropertyName("windowsAppId")]
+    public string? WindowsAppId { get; set; }         // process exe name on Windows
+
+    [JsonPropertyName("domain")]
+    public string? Domain { get; set; }
+
+    [JsonPropertyName("exemptDeviceIds")]
+    public string[]? ExemptDeviceIds { get; set; }
+}
+
+/// <summary>
 /// Remote state from Python addon (written to ~/.oximy/remote-state.json).
 /// The addon writes this file based on server-side configuration.
 /// </summary>
@@ -80,6 +110,9 @@ public class RemoteState
 
     [JsonPropertyName("appConfig")]
     public AppConfigFlags? AppConfig { get; set; }
+
+    [JsonPropertyName("enforcementRules")]
+    public List<EnforcementRule>? EnforcementRules { get; set; }
 }
 
 /// <summary>
@@ -99,6 +132,7 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
     private string? _tenantId;
     private string? _itSupport;
     private AppConfigFlags? _appConfig;
+    private List<EnforcementRule> _enforcementRules = new();
     private DateTime? _lastUpdate;
     private bool _isRunning;
     private bool _disposed;
@@ -153,6 +187,20 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
         get => _appConfig;
         private set => SetProperty(ref _appConfig, value);
     }
+
+    /// <summary>
+    /// Enforcement rules for apps and websites, delivered via remote-state.json.
+    /// </summary>
+    public List<EnforcementRule> EnforcementRules
+    {
+        get => _enforcementRules;
+        private set => SetProperty(ref _enforcementRules, value);
+    }
+
+    /// <summary>
+    /// Event fired when enforcement rules change.
+    /// </summary>
+    public event EventHandler? EnforcementRulesChanged;
 
     /// <summary>
     /// Last time the state was successfully read.
@@ -252,6 +300,14 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
             ItSupport = state.ItSupport;
             AppConfig = state.AppConfig;
             LastUpdate = DateTime.Now;
+
+            // Update enforcement rules and fire event if changed
+            var newRules = state.EnforcementRules ?? new List<EnforcementRule>();
+            if (!RulesEqual(_enforcementRules, newRules))
+            {
+                EnforcementRules = newRules;
+                EnforcementRulesChanged?.Invoke(this, EventArgs.Empty);
+            }
 
             // Update tenant tag if available
             if (!string.IsNullOrEmpty(state.TenantId))
@@ -446,6 +502,20 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
         {
             _isFetchingConfig = false;
         }
+    }
+
+    /// <summary>
+    /// Compare two enforcement rule lists by toolId+mode for change detection.
+    /// </summary>
+    private static bool RulesEqual(List<EnforcementRule> a, List<EnforcementRule> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (a[i].ToolId != b[i].ToolId || a[i].Mode != b[i].Mode)
+                return false;
+        }
+        return true;
     }
 
     /// <summary>

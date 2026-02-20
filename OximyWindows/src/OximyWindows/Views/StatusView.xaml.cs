@@ -42,6 +42,7 @@ public partial class StatusView : UserControl
         App.RemoteStateService.PropertyChanged += OnRemoteStateChanged;
         App.MitmService.Started += OnMitmStarted;
         App.MitmService.Stopped += OnMitmStopped;
+        ViolationService.Instance.NewViolationDetected += OnViolationDetected;
     }
 
     private void UnsubscribeFromEvents()
@@ -50,10 +51,12 @@ public partial class StatusView : UserControl
         App.RemoteStateService.PropertyChanged -= OnRemoteStateChanged;
         App.MitmService.Started -= OnMitmStarted;
         App.MitmService.Stopped -= OnMitmStopped;
+        ViolationService.Instance.NewViolationDetected -= OnViolationDetected;
     }
 
     private void OnMitmStarted(object? sender, EventArgs e) => ScheduleUIUpdate();
     private void OnMitmStopped(object? sender, EventArgs e) => ScheduleUIUpdate();
+    private void OnViolationDetected(object? sender, ViolationEntry e) => Dispatcher.BeginInvoke(UpdateViolationsPanel);
     private void OnRefreshTimerTick(object? sender, EventArgs e) => AppState.Instance.RefreshEventsCount();
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -141,6 +144,9 @@ public partial class StatusView : UserControl
         // Certificate status - run on background thread to avoid blocking UI
         await Task.Run(() => App.CertificateService.CheckStatus());
         CertWarningText.Visibility = App.CertificateService.IsCAInstalled ? Visibility.Collapsed : Visibility.Visible;
+
+        // Recent violations panel
+        UpdateViolationsPanel();
     }
 
     private void UpdateStatusUI()
@@ -182,9 +188,7 @@ public partial class StatusView : UserControl
         }
         else if (!isCertInstalled)
         {
-            // Setup Required — cert must be installed before monitoring can be active.
-            // This check MUST come before ProxyActive so we never show "Monitoring Active"
-            // when the cert is not trusted by the system.
+            // Setup Required - Gray (check before ProxyActive so cert setup always shown first)
             statusColor = grayBrush;
             statusIcon = "\uEAFC"; // Shield slash
             statusText = "Setup Required";
@@ -229,6 +233,25 @@ public partial class StatusView : UserControl
         StatusIcon.Text = statusIcon;
         StatusIcon.Foreground = statusColor;
         StatusText.Text = statusText;
+    }
+
+    private void UpdateViolationsPanel()
+    {
+        var violations = ViolationService.Instance.Violations;
+        if (violations.Count == 0)
+        {
+            ViolationsPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        ViolationsPanel.Visibility = Visibility.Visible;
+        ViolationCountText.Text = violations.Count.ToString();
+
+        // Show last 3 violations, newest first
+        ViolationsList.ItemsSource = violations
+            .Skip(Math.Max(0, violations.Count - 3))
+            .Reverse()
+            .ToList();
     }
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e)

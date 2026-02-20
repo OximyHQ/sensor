@@ -156,6 +156,95 @@
                             Click="RetryButton_Click"/>
                 </Grid>
             </Border>
+            <!-- Recent Violations Panel (shown when violations exist) -->
+            <Border x:Name="ViolationsPanel"
+                    Background="#1AFF6B00"
+                    CornerRadius="8"
+                    BorderBrush="#33FF6B00"
+                    BorderThickness="1"
+                    Margin="0,12,0,0"
+                    Padding="12,10"
+                    Visibility="Collapsed">
+                <StackPanel>
+                    <!-- Header row -->
+                    <Grid Margin="0,0,0,8">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xEA18;"
+                                       FontFamily="Segoe MDL2 Assets"
+                                       FontSize="13"
+                                       Foreground="#FF6B00"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,6,0"/>
+                            <TextBlock Text="Recent Violations"
+                                       FontSize="12"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <Border Background="#FF6B00"
+                                CornerRadius="8"
+                                Padding="5,1"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Center">
+                            <TextBlock x:Name="ViolationCountText"
+                                       Text="0"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       Foreground="White"/>
+                        </Border>
+                    </Grid>
+
+                    <!-- Violation rows (last 3) -->
+                    <ItemsControl x:Name="ViolationsList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,3,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding PiiIcon}"
+                                               FontFamily="Segoe MDL2 Assets"
+                                               FontSize="11"
+                                               Foreground="#FF6B00"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,6,0"/>
+
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding PiiLabel}"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"/>
+
+                                    <Border Grid.Column="2"
+                                            Background="{DynamicResource AccentBrush}"
+                                            CornerRadius="6"
+                                            Padding="5,1"
+                                            Margin="4,0"
+                                            VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Host}"
+                                                   FontSize="10"
+                                                   Foreground="White"
+                                                   MaxWidth="80"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </Border>
+
+                                    <TextBlock Grid.Column="3"
+                                               Text="{Binding RelativeTime}"
+                                               FontSize="10"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               VerticalAlignment="Center"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
         </StackPanel>
 
         <!-- Bottom Info Card -->
