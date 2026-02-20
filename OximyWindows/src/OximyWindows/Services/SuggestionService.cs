@@ -100,7 +100,17 @@ public class SuggestionService
         try
         {
             var json = File.ReadAllText(path);
-            var suggestions = JsonSerializer.Deserialize<List<PlaybookSuggestion>>(json);
+            List<PlaybookSuggestion>? suggestions;
+            try
+            {
+                suggestions = JsonSerializer.Deserialize<List<PlaybookSuggestion>>(json);
+            }
+            catch (JsonException)
+            {
+                // Python addon writes a single object, not an array
+                var single = JsonSerializer.Deserialize<PlaybookSuggestion>(json);
+                suggestions = single != null ? [single] : null;
+            }
             if (suggestions == null) return;
 
             foreach (var suggestion in suggestions)
@@ -150,17 +160,31 @@ public class SuggestionService
         try
         {
             var json = File.ReadAllText(path);
-            var suggestions = JsonSerializer.Deserialize<List<PlaybookSuggestion>>(json);
-            if (suggestions == null) return;
 
-            var target = suggestions.FirstOrDefault(s => s.Id == id);
+            // Python addon writes a single object; support both formats and
+            // write back in the same shape so read_suggestion_feedback still works.
+            List<PlaybookSuggestion>? list = null;
+            PlaybookSuggestion? singleObj = null;
+            try
+            {
+                list = JsonSerializer.Deserialize<List<PlaybookSuggestion>>(json);
+            }
+            catch (JsonException)
+            {
+                singleObj = JsonSerializer.Deserialize<PlaybookSuggestion>(json);
+            }
+
+            var target = list?.FirstOrDefault(s => s.Id == id)
+                      ?? (singleObj?.Id == id ? singleObj : null);
             if (target == null) return;
 
             target.Status = status;
 
             // Atomic write: write to temp file, then replace
             var tempPath = path + ".tmp";
-            var updated = JsonSerializer.Serialize(suggestions, _jsonOptions);
+            var updated = list != null
+                ? JsonSerializer.Serialize(list, _jsonOptions)
+                : JsonSerializer.Serialize(singleObj!, _jsonOptions);
             File.WriteAllText(tempPath, updated);
             File.Replace(tempPath, path, null);
 
