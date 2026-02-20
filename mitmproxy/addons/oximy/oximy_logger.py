@@ -292,15 +292,17 @@ class _OximyLogger:
         self._bs_enqueue(entry)
 
     def _bs_enqueue(self, entry: dict) -> None:
+        needs_flush = False
         with self._bs_lock:
             self._bs_buffer.append(entry)
             if len(self._bs_buffer) >= 20:
-                self._bs_flush()
-                return
-            if self._bs_flush_timer is None or not self._bs_flush_timer.is_alive():
+                needs_flush = True
+            elif self._bs_flush_timer is None or not self._bs_flush_timer.is_alive():
                 self._bs_flush_timer = threading.Timer(5.0, self._bs_flush)
                 self._bs_flush_timer.daemon = True
                 self._bs_flush_timer.start()
+        if needs_flush:
+            self._bs_flush()
 
     def _bs_flush(self) -> None:
         with self._bs_lock:
