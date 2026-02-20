@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Timers;
 using OximyWindows.Core;
 using OximyWindows.Models;
@@ -136,7 +137,7 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
     private DateTime? _lastUpdate;
     private bool _isRunning;
     private bool _disposed;
-    private bool _isFetchingConfig;
+    private int _isFetchingConfig;  // 0 = idle, 1 = in-flight; use Interlocked for thread safety
     // Deduplication for one-shot commands (prevents re-execution on every poll)
     private bool _lastSeenForceSync;
     private bool _lastSeenClearCache;
@@ -371,9 +372,12 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
     /// </summary>
     private async Task FetchSensorConfigDirectlyAsync()
     {
-        if (_isFetchingConfig) return;
-        if (AppState.Instance.Phase != Phase.Connected) return;
-        _isFetchingConfig = true;
+        if (Interlocked.CompareExchange(ref _isFetchingConfig, 1, 0) != 0) return;
+        if (AppState.Instance.Phase != Phase.Connected)
+        {
+            Interlocked.Exchange(ref _isFetchingConfig, 0);
+            return;
+        }
 
         try
         {
@@ -500,7 +504,7 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
         }
         finally
         {
-            _isFetchingConfig = false;
+            Interlocked.Exchange(ref _isFetchingConfig, 0);
         }
     }
 

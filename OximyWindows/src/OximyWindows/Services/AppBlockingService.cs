@@ -104,7 +104,9 @@ public class AppBlockingService
     {
         // Seed known PIDs so we don't fire on already-running processes
         foreach (var p in Process.GetProcesses())
-            _knownPids.Add(p.Id);
+        {
+            using (p) _knownPids.Add(p.Id);
+        }
 
         _fallbackTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
@@ -119,15 +121,19 @@ public class AppBlockingService
         try
         {
             var current = Process.GetProcesses();
+            var currentPids = new HashSet<int>(current.Length);
             foreach (var p in current)
             {
                 using (p)
                 {
+                    currentPids.Add(p.Id);
                     if (_knownPids.Contains(p.Id)) continue;
                     _knownPids.Add(p.Id);
                     CheckAndEnforce(p.ProcessName, p.Id);
                 }
             }
+            // Prune exited PIDs so recycled PIDs are checked again on relaunch
+            _knownPids.IntersectWith(currentPids);
         }
         catch (Exception ex)
         {
@@ -196,7 +202,7 @@ public class AppBlockingService
     {
         try
         {
-            var process = Process.GetProcessById(processId);
+            using var process = Process.GetProcessById(processId);
             process.Kill();
             Debug.WriteLine($"[AppBlockingService] Killed blocked process {processName} (pid={processId})");
         }

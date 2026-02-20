@@ -98,6 +98,7 @@ public partial class SuggestionNotificationWindow : Window
     {
         if (_actioned) return;
         _actioned = true;
+        _dismissTimer.Stop();   // prevent concurrent HideWindow() from the auto-dismiss timer
 
         Clipboard.SetText(_suggestion.Playbook.PromptTemplate);
         UseButton.Content = "✓ Copied!";

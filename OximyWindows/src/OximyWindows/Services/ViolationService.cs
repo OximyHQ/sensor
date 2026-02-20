@@ -22,25 +22,25 @@ public class ViolationEntry
     [JsonPropertyName("action")]
     public string Action { get; set; } = "";
 
-    [JsonPropertyName("policyName")]
+    [JsonPropertyName("policy_name")]
     public string PolicyName { get; set; } = "";
 
-    [JsonPropertyName("ruleName")]
+    [JsonPropertyName("rule_name")]
     public string RuleName { get; set; } = "";
 
     [JsonPropertyName("severity")]
     public string Severity { get; set; } = "";
 
-    [JsonPropertyName("detectedType")]
+    [JsonPropertyName("detected_type")]
     public string DetectedType { get; set; } = "";
 
     [JsonPropertyName("host")]
     public string Host { get; set; } = "";
 
-    [JsonPropertyName("bundleId")]
+    [JsonPropertyName("bundle_id")]
     public string BundleId { get; set; } = "";
 
-    [JsonPropertyName("retryAllowed")]
+    [JsonPropertyName("retry_allowed")]
     public bool RetryAllowed { get; set; }
 
     [JsonPropertyName("message")]
@@ -95,6 +95,16 @@ public class ViolationEntry
 }
 
 /// <summary>
+/// Matches the wrapper object written by addon._write_violation_file:
+/// { "violations": [...], "last_updated": "..." }
+/// </summary>
+internal class ViolationsFile
+{
+    [JsonPropertyName("violations")]
+    public List<ViolationEntry>? Violations { get; set; }
+}
+
+/// <summary>
 /// Polls ~/.oximy/violations.json every 1 second and surfaces new violations as events.
 /// Mirror of ViolationService.swift on Mac.
 /// </summary>
@@ -142,7 +152,8 @@ public class ViolationService
         try
         {
             var json = File.ReadAllText(path);
-            var entries = JsonSerializer.Deserialize<List<ViolationEntry>>(json);
+            var wrapper = JsonSerializer.Deserialize<ViolationsFile>(json);
+            var entries = wrapper?.Violations;
             if (entries == null) return;
 
             foreach (var entry in entries)
