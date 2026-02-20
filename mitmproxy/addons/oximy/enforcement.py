@@ -119,6 +119,33 @@ PRESIDIO_TO_OXIMY: dict[str, str] = {
     "ORGANIZATION": "organization",
     "DATE_TIME": "date_time",
     "NRP": "nationality",
+    # Financial
+    "ABA_ROUTING_NUMBER": "aba_routing_number",
+    "CRYPTO": "crypto",
+    # Australian
+    "AU_MEDICARE": "au_medicare",
+    # Spanish
+    "ES_NIE": "es_nie",
+    "ES_NIF": "es_nif",
+    # Finnish
+    "FI_PERSONAL_IDENTITY_CODE": "fi_personal_identity_code",
+    # Indian
+    "IN_AADHAAR": "in_aadhaar",
+    "IN_PASSPORT": "in_passport",
+    "IN_VEHICLE_REGISTRATION": "in_vehicle_registration",
+    "IN_VOTER": "in_voter",
+    # Italian
+    "IT_DRIVER_LICENSE": "it_driver_license",
+    "IT_FISCAL_CODE": "it_fiscal_code",
+    "IT_IDENTITY_CARD": "it_identity_card",
+    "IT_PASSPORT": "it_passport",
+    "IT_VAT_CODE": "it_vat_code",
+    # Polish
+    "PL_PESEL": "pl_pesel",
+    # Singaporean
+    "SG_UEN": "sg_uen",
+    # British
+    "UK_NINO": "uk_nino",
 }
 
 # Reverse mapping: Oximy name -> Presidio entity type
@@ -142,6 +169,13 @@ for _etype in CUSTOM_ENTITY_TYPES:
 for _etype in ("US_DRIVER_LICENSE", "US_PASSPORT", "US_BANK_NUMBER", "US_ITIN",
                "IBAN_CODE", "UK_NHS", "SG_NRIC_FIN", "IN_PAN", "AU_ABN", "AU_ACN", "AU_TFN",
                "MEDICAL_LICENSE", "URL", "DOMAIN_NAME"):
+    CONFIDENCE_THRESHOLDS[_etype] = 0.5
+# New entities (all pattern-based)
+for _etype in ("ABA_ROUTING_NUMBER", "CRYPTO", "AU_MEDICARE",
+               "ES_NIE", "ES_NIF", "FI_PERSONAL_IDENTITY_CODE",
+               "IN_AADHAAR", "IN_PASSPORT", "IN_VEHICLE_REGISTRATION", "IN_VOTER",
+               "IT_DRIVER_LICENSE", "IT_FISCAL_CODE", "IT_IDENTITY_CARD", "IT_PASSPORT", "IT_VAT_CODE",
+               "PL_PESEL", "SG_UEN", "UK_NINO"):
     CONFIDENCE_THRESHOLDS[_etype] = 0.5
 # ORGANIZATION, DATE_TIME, NRP already get 0.6 from the NER_ENTITY_TYPES loop above
 
