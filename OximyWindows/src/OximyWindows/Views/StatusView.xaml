@@ -111,7 +111,7 @@
 
             <!-- Certificate Warning -->
             <TextBlock x:Name="CertWarningText"
-                       Text="Install certificate in Settings first"
+                       Text="Installing certificate..."
                        FontSize="12"
                        Foreground="{DynamicResource TextSecondaryBrush}"
                        HorizontalAlignment="Center"
