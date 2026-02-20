@@ -121,19 +121,21 @@ public class AppBlockingService
         try
         {
             var current = Process.GetProcesses();
+            var previousPids = _knownPids;
             var currentPids = new HashSet<int>(current.Length);
+
             foreach (var p in current)
             {
                 using (p)
                 {
                     currentPids.Add(p.Id);
-                    if (_knownPids.Contains(p.Id)) continue;
-                    _knownPids.Add(p.Id);
+                    if (previousPids.Contains(p.Id)) continue;
                     CheckAndEnforce(p.ProcessName, p.Id);
                 }
             }
-            // Prune exited PIDs so recycled PIDs are checked again on relaunch
-            _knownPids.IntersectWith(currentPids);
+
+            // Replace entirely: exited PIDs drop out, recycled PIDs re-enter next tick
+            _knownPids = currentPids;
         }
         catch (Exception ex)
         {
