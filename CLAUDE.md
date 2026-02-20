@@ -20,7 +20,7 @@ Run tests before committing or building:
 python -m pytest mitmproxy/addons/oximy/tests/ -v --tb=short
 ```
 
-Expected: `271 passed`. Run specific files or patterns with `-k`:
+Expected: `663 passed`. Run specific files or patterns with `-k`:
 
 ```bash
 python -m pytest mitmproxy/addons/oximy/tests/test_addon.py -v
@@ -292,3 +292,5 @@ Apps use `~/.mitmproxy/oximy-ca-cert.pem` (auto-generated on first run via `CONF
 - `addon.py`: `_state` is a module-level singleton — tests must save/restore `_state.sensor_active`
 - `normalize.py`: `contains_blacklist_word()` expects pre-lowercased words
 ```
+
+- Terminal proxy tracking (shell profile injection, launchctl env vars, env scripts, CA bundle) was removed — see commit `chore: remove terminal proxy tracking` to restore.

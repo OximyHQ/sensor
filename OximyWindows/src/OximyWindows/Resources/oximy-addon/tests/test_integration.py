@@ -12,19 +12,18 @@ import threading
 import time
 from datetime import date
 from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock
+from unittest.mock import mock_open
+from unittest.mock import patch
 
 import pytest
 
-from mitmproxy.addons.oximy.addon import (
-    OximyAddon,
-    TLSPassthrough,
-    MemoryTraceBuffer,
-    _parse_sensor_config,
-    _state,
-)
-from mitmproxy.addons.oximy.process import ClientProcess
-
+from addon import _parse_sensor_config
+from addon import _state
+from addon import MemoryTraceBuffer
+from addon import OximyAddon
+from addon import TLSPassthrough
+from process import ClientProcess
 
 # =============================================================================
 # Test Helpers
@@ -160,6 +159,12 @@ def _make_addon(
 
     # Local data collector (disabled for tests)
     addon._local_collector = None
+
+    # Enforcement rules (empty by default for tests)
+    addon._enforcement_rules = []
+    addon._blocked_domains = {}
+    addon._warned_domains = {}
+    addon._warned_web_sessions = set()
 
     return addon
 

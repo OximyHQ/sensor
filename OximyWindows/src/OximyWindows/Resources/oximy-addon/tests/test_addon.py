@@ -7,64 +7,51 @@ are mocked appropriately.
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import re
-import time
-from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
-
-import pytest
 
 # Import the functions under test
 import subprocess
 import sys
-
-import io
-import os
+import time
 import urllib.error
+from pathlib import Path
+from unittest.mock import MagicMock
+from unittest.mock import mock_open
+from unittest.mock import patch
 
-from mitmproxy.addons.oximy.addon import (
-    API_PATH_INGEST_TRACES,
-    API_PATH_SENSOR_CONFIG,
-    DEFAULT_API_BASE_URL,
-    DISK_CLEANUP_INTERVAL,
-    DISK_MAX_AGE_DAYS,
-    DISK_MAX_TOTAL_BYTES,
-    DirectTraceUploader,
-    OXIMY_CA_CERT,
-    OXIMY_COMBINED_CA_BUNDLE,
-    OXIMY_DEV_CONFIG,
-    PROXY_HOST,
-    WINDOWS_BROWSERS,
-    MemoryTraceBuffer,
-    OximyAddon,
-    TLSPassthrough,
-    _build_url_regex,
-    _check_circuit_breaker,
-    _cleanup_done,
-    _emergency_cleanup,
-    _LAUNCHCTL_ENV_VARS,
-    _resolve_api_base_url,
-    _set_launchctl_env,
-    _state,
-    _teardown_terminal_env,
-    _unset_launchctl_env,
-    contains_blacklist_word,
-    extract_graphql_operation,
-    generate_event_id,
-    load_output_config,
-    matches_app_origin,
-    matches_domain,
-    matches_host_origin,
-    matches_whitelist,
-    _matches_url_pattern,
-    _atomic_write,
-    _write_force_logout_state,
-    _write_proxy_state,
-    OXIMY_STATE_FILE,
-    OXIMY_COMMAND_RESULTS_FILE,
-)
+import pytest
 
+from addon import _build_url_regex
+from addon import _emergency_cleanup
+from addon import _LAUNCHCTL_ENV_VARS
+from addon import _matches_url_pattern
+from addon import _resolve_api_base_url
+from addon import _set_launchctl_env
+from addon import _state
+from addon import _teardown_terminal_env
+from addon import _unset_launchctl_env
+from addon import _write_force_logout_state
+from addon import _write_proxy_state
+from addon import contains_blacklist_word
+from addon import DEFAULT_API_BASE_URL
+from addon import DirectTraceUploader
+from addon import extract_graphql_operation
+from addon import generate_event_id
+from addon import load_output_config
+from addon import matches_app_origin
+from addon import matches_domain
+from addon import matches_host_origin
+from addon import matches_whitelist
+from addon import MemoryTraceBuffer
+from addon import OXIMY_CA_CERT
+from addon import OXIMY_COMBINED_CA_BUNDLE
+from addon import OXIMY_STATE_FILE
+from addon import OximyAddon
+from addon import PROXY_HOST
+from addon import TLSPassthrough
 
 # =============================================================================
 # matches_domain Tests
@@ -909,7 +896,6 @@ class TestEdgeCases:
 # =============================================================================
 
 
-import os
 
 
 def _make_addon_with_output_dir(tmp_path: Path) -> OximyAddon:
@@ -1089,8 +1075,10 @@ class TestLaunchctlEnv:
         _set_launchctl_env()
         mock_run.assert_not_called()
 
+    @patch("mitmproxy.addons.oximy.addon.sys")
     @patch("mitmproxy.addons.oximy.addon.subprocess.run")
-    def test_set_calls_setenv_for_each_var(self, mock_run):
+    def test_set_calls_setenv_for_each_var(self, mock_run, mock_sys):
+        mock_sys.platform = "darwin"
         _state.proxy_port = "8080"
         _set_launchctl_env()
         assert mock_run.call_count == len(_LAUNCHCTL_ENV_VARS)
@@ -1098,8 +1086,10 @@ class TestLaunchctlEnv:
         assert first_call_args[0] == "launchctl"
         assert first_call_args[1] == "setenv"
 
+    @patch("mitmproxy.addons.oximy.addon.sys")
     @patch("mitmproxy.addons.oximy.addon.subprocess.run")
-    def test_set_correct_proxy_values(self, mock_run):
+    def test_set_correct_proxy_values(self, mock_run, mock_sys):
+        mock_sys.platform = "darwin"
         _state.proxy_port = "9090"
         _set_launchctl_env()
         calls = {c[0][0][2]: c[0][0][3] for c in mock_run.call_args_list}
@@ -1115,8 +1105,10 @@ class TestLaunchctlEnv:
         _state.proxy_port = "8080"
         _set_launchctl_env()  # Should not raise
 
+    @patch("mitmproxy.addons.oximy.addon.sys")
     @patch("mitmproxy.addons.oximy.addon.subprocess.run")
-    def test_unset_calls_unsetenv_for_each_var(self, mock_run):
+    def test_unset_calls_unsetenv_for_each_var(self, mock_run, mock_sys):
+        mock_sys.platform = "darwin"
         _unset_launchctl_env()
         assert mock_run.call_count == len(_LAUNCHCTL_ENV_VARS)
         first_call_args = mock_run.call_args_list[0][0][0]
@@ -1200,10 +1192,12 @@ class TestLaunchctlEnvIntegration:
 class TestLaunchctlShutdownPaths:
     """Verify _unset_launchctl_env is called in every shutdown path."""
 
+    @patch("mitmproxy.addons.oximy.addon.sys")
     @patch("mitmproxy.addons.oximy.addon._unset_launchctl_env")
     @patch("mitmproxy.addons.oximy.addon._remove_shell_profile_injections")
-    def test_teardown_terminal_env_calls_unset(self, mock_remove, mock_unset):
+    def test_teardown_terminal_env_calls_unset(self, mock_remove, mock_unset, mock_sys):
         """Normal shutdown path: _teardown_terminal_env must call _unset_launchctl_env."""
+        mock_sys.platform = "darwin"
         _teardown_terminal_env()
         mock_unset.assert_called_once()
 
@@ -1228,7 +1222,7 @@ class TestLaunchctlShutdownPaths:
     @patch("mitmproxy.addons.oximy.addon._set_system_proxy")
     def test_sensor_disable_calls_unset(self, mock_proxy, mock_set, mock_unset, mock_write):
         """Remote sensor disable path: must call _unset_launchctl_env."""
-        from mitmproxy.addons.oximy.addon import _apply_sensor_state
+        from addon import _apply_sensor_state
         _apply_sensor_state(enabled=False)
         mock_unset.assert_called_once()
 
@@ -1238,7 +1232,7 @@ class TestLaunchctlShutdownPaths:
     @patch("mitmproxy.addons.oximy.addon._set_system_proxy")
     def test_sensor_enable_calls_set(self, mock_proxy, mock_set, mock_unset, mock_write):
         """Remote sensor enable path: must call _set_launchctl_env."""
-        from mitmproxy.addons.oximy.addon import _apply_sensor_state
+        from addon import _apply_sensor_state
         _state.proxy_port = "8080"
         _apply_sensor_state(enabled=True)
         mock_set.assert_called_once()
