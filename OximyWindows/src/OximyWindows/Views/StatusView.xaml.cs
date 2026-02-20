@@ -180,6 +180,17 @@ public partial class StatusView : UserControl
                 ItSupportText.Visibility = Visibility.Collapsed;
             }
         }
+        else if (!isCertInstalled)
+        {
+            // Setup Required — cert must be installed before monitoring can be active.
+            // This check MUST come before ProxyActive so we never show "Monitoring Active"
+            // when the cert is not trusted by the system.
+            statusColor = grayBrush;
+            statusIcon = "\uEAFC"; // Shield slash
+            statusText = "Setup Required";
+            PortText.Visibility = Visibility.Collapsed;
+            AdminPausedPanel.Visibility = Visibility.Collapsed;
+        }
         else if (remote.ProxyActive)
         {
             // Monitoring Active - Green
@@ -194,15 +205,6 @@ public partial class StatusView : UserControl
                 PortText.Text = $"Port {App.MitmService.CurrentPort.Value}";
                 PortText.Visibility = Visibility.Visible;
             }
-        }
-        else if (!isCertInstalled)
-        {
-            // Setup Required - Gray
-            statusColor = grayBrush;
-            statusIcon = "\uEAFC"; // Shield slash
-            statusText = "Setup Required";
-            PortText.Visibility = Visibility.Collapsed;
-            AdminPausedPanel.Visibility = Visibility.Collapsed;
         }
         else if (status == ConnectionStatus.Error)
         {

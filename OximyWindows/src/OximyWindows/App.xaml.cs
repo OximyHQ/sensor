@@ -448,26 +448,49 @@ public partial class App : Application
 
     /// <summary>
     /// Start all services on app relaunch when already connected (saved credentials).
-    /// This ensures mitmproxy, heartbeat, and sync all start — not just heartbeat/sync.
+    /// Certificate must be installed before monitoring starts.
     /// </summary>
     private async Task StartServicesOnRelaunchAsync()
     {
         Debug.WriteLine("[App] Starting services on relaunch (already connected)...");
 
-        // Start mitmproxy if not already running
-        if (!MitmService.IsRunning)
+        // Ensure certificate is installed — try silently if cert file exists but not in store
+        CertificateService.CheckStatus();
+        if (!CertificateService.IsCAInstalled && CertificateService.IsCAGenerated)
         {
             try
             {
-                await MitmService.StartAsync();
-                Debug.WriteLine("[App] MitmService started on relaunch");
+                await CertificateService.InstallCAAsync();
+                Debug.WriteLine("[App] Certificate installed on relaunch");
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[App] MitmService start failed on relaunch: {ex.Message}");
-                OximyLogger.Log(EventCode.APP_FAIL_301, "Service start failed",
-                    new Dictionary<string, object> { ["error"] = ex.Message });
+                Debug.WriteLine($"[App] Certificate install failed on relaunch: {ex.Message}");
             }
+        }
+
+        // Only start mitmproxy if certificate is installed — monitoring without a trusted
+        // cert causes SSL errors for the user and gives a false "Monitoring Active" status.
+        if (CertificateService.IsCAInstalled)
+        {
+            if (!MitmService.IsRunning)
+            {
+                try
+                {
+                    await MitmService.StartAsync();
+                    Debug.WriteLine("[App] MitmService started on relaunch");
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[App] MitmService start failed on relaunch: {ex.Message}");
+                    OximyLogger.Log(EventCode.APP_FAIL_301, "Service start failed",
+                        new Dictionary<string, object> { ["error"] = ex.Message });
+                }
+            }
+        }
+        else
+        {
+            Debug.WriteLine("[App] Certificate not installed — monitoring blocked until cert is installed from Settings");
         }
 
         HeartbeatService.Start();
@@ -478,36 +501,14 @@ public partial class App : Application
 
     /// <summary>
     /// Start all services after enrollment completes.
-    /// Certificate installation and mitmproxy startup happen in background.
+    /// Mitmproxy must start first to generate CA cert files, then cert is installed.
     /// </summary>
     private async Task StartServicesAfterEnrollmentAsync()
     {
         Debug.WriteLine("[App] Starting services after enrollment...");
 
-        // Install certificate in background (will prompt user via Windows UAC if needed)
-        CertificateService.CheckStatus();
-        if (!CertificateService.IsCAInstalled)
-        {
-            try
-            {
-                await CertificateService.InstallCAAsync();
-                Debug.WriteLine("[App] Certificate installed after enrollment");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[App] Certificate install failed (user can retry from settings): {ex.Message}");
-                // Don't block - user can install from settings later
-            }
-        }
-
-        // Mark setup complete once cert is installed
-        if (CertificateService.IsCAInstalled)
-        {
-            OximyLogger.IsSetupComplete = true;
-            SentryService.UpdateSetupStatus(true);
-        }
-
-        // Start mitmproxy
+        // Start mitmproxy first — it generates ~/.mitmproxy/oximy-ca-cert.pem on first run.
+        // Cert install cannot happen before this because the file won't exist yet.
         if (!MitmService.IsRunning)
         {
             try
@@ -521,6 +522,42 @@ public partial class App : Application
                 OximyLogger.Log(EventCode.APP_FAIL_301, "Service start failed",
                     new Dictionary<string, object> { ["error"] = ex.Message });
             }
+        }
+
+        // Install certificate — wait up to 10s for mitmproxy to generate the cert file
+        CertificateService.CheckStatus();
+        if (!CertificateService.IsCAInstalled)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (!CertificateService.IsCAGenerated && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(500);
+                CertificateService.CheckStatus();
+            }
+
+            if (CertificateService.IsCAGenerated)
+            {
+                try
+                {
+                    await CertificateService.InstallCAAsync();
+                    Debug.WriteLine("[App] Certificate installed after enrollment");
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[App] Certificate install failed (user can retry from settings): {ex.Message}");
+                }
+            }
+            else
+            {
+                Debug.WriteLine("[App] Cert file not generated within timeout — user must install from settings");
+            }
+        }
+
+        // Mark setup complete once cert is installed
+        if (CertificateService.IsCAInstalled)
+        {
+            OximyLogger.IsSetupComplete = true;
+            SentryService.UpdateSetupStatus(true);
         }
 
         // Start heartbeat and sync services
