@@ -52,7 +52,7 @@ struct HomeTab: View {
                                 .lineLimit(1)
                             Text(v.relativeTime)
                                 .font(.caption2)
-                                .foregroundColor(.tertiary)
+                                .foregroundStyle(.tertiary)
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 3)

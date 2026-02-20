@@ -1,30 +1,6 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Non-activating Panel Infrastructure (Granola / Notion style)
-
-/// Custom NSPanel that accepts mouse clicks without stealing focus from the active app.
-class InteractivePanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
-}
-
-/// NSHostingView subclass that ensures first-click works on buttons inside non-key panels.
-class FirstClickHostingView<Content: View>: NSHostingView<Content> {
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect, .cursorUpdate],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-    }
-}
-
 // MARK: - Violation Panel Controller
 
 /// Floating panel that appears when PII is redacted from a request.
