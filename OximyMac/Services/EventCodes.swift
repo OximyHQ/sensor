@@ -69,6 +69,7 @@ enum EventCode: String {
     case PROXY_CLEAN_001 = "PROXY.CLEAN.001"
     case PROXY_STATE_002 = "PROXY.STATE.002"
     case PROXY_FAIL_301 = "PROXY.FAIL.301"
+    case PROXY_ENFORCE_001 = "PROXY.ENFORCE.001"
 
     // MITM
     case MITM_START_002 = "MITM.START.002"
@@ -161,7 +162,7 @@ enum EventCode: String {
             return .investigate
         case .MITM_FAIL_304, .MITM_FAIL_306, .MITM_RETRY_001, .AUTH_FAIL_201:
             return .autoRetry
-        case .CERT_STATE_105, .PROXY_CLEAN_001:
+        case .CERT_STATE_105, .PROXY_CLEAN_001, .PROXY_ENFORCE_001:
             return .selfHealing
         case .HB_FAIL_201, .HB_FAIL_203, .SYNC_FAIL_201,
              .NET_STATE_102:

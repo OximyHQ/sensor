@@ -94,6 +94,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // This MUST run before any UI loads to restore internet connectivity
         ProxyService.shared.cleanupOrphanedProxy()
 
+        // Clean up any orphaned browser policies from a previous crash
+        BrowserPolicyService.shared.cleanupOrphanedPolicies()
+
         // Startup snapshot event
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
@@ -355,6 +358,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // FAIL-OPEN: Uses local state, no API dependency
                 try await ProxyService.shared.enableProxy(port: port)
                 print("[OximyApp] Proxy reconfigured successfully for new network on port \(port)")
+
+                // Start enforcement if enabled by remote config
+                if RemoteStateService.shared.appConfig?.enforceProxy == true {
+                    ProxyEnforcementService.shared.startEnforcement(port: port)
+                    do {
+                        try await BrowserPolicyService.shared.enablePolicies(port: port)
+                    } catch {
+                        NSLog("[AppDelegate] Failed to enable browser policies: %@", error.localizedDescription)
+                    }
+                }
             } catch {
                 print("[OximyApp] Failed to reconfigure proxy: \(error)")
                 OximyLogger.shared.log(.NET_FAIL_301, "Proxy reconfiguration failed after network change", data: [
@@ -635,6 +648,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Notify Sentry of clean shutdown
         SentryService.shared.appWillTerminate()
+
+        // Stop proxy enforcement before disabling proxy
+        ProxyEnforcementService.shared.stopEnforcement()
+
+        // Best-effort removal of browser policies during shutdown
+        BrowserPolicyService.shared.disablePoliciesSync()
 
         // CRITICAL: Cleanup proxy and mitmproxy so user doesn't lose internet
         // Use synchronous version to ensure it completes before app exits

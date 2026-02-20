@@ -20,6 +20,7 @@ struct AppConfigFlags: Codable {
     let managedWorkspaceName: String?
     let apiEndpoint: String?
     let heartbeatInterval: Int?
+    let enforceProxy: Bool?
 }
 
 /// Enforcement rule from the admin dashboard (via sensor-config → remote-state.json)

@@ -78,6 +78,7 @@ public partial class App : Application
         // CRITICAL: Clean up any orphaned proxy settings from a previous crash.
         // FAIL-OPEN: This MUST run before any UI loads to restore internet connectivity.
         ProxyService.CleanupOrphanedProxy();
+        BrowserPolicyService.CleanupOrphanedPolicies();
 
         // Single instance check
         const string mutexName = "OximyWindowsSingleInstance";
@@ -174,6 +175,13 @@ public partial class App : Application
         RemoteStateService.ForceLogoutRequested += OnForceLogoutRequested;
         RemoteStateService.SensorEnabledChanged += OnSensorStateChanged;
 
+        // Wire proxy enforcement into proxy lifecycle
+        MitmService.Started += OnMitmStarted;
+        MitmService.Stopped += OnMitmStopped;
+
+        // Re-enable proxy on network changes if enforcement is active
+        NetworkMonitorService.NetworkChanged += OnNetworkChangedForEnforcement;
+
         // Auto-enable launch at startup on first run
         StartupService.CheckAndAutoEnableOnFirstLaunch();
 
@@ -210,6 +218,8 @@ public partial class App : Application
             Debug.WriteLine("[App] Logout requested by server");
             OximyLogger.Log(EventCode.AUTH_AUTH_002, "User logged out");
             SentryService.ClearUser();
+            ProxyEnforcementService.Instance.StopEnforcement();
+            BrowserPolicyService.DisablePolicies();
             ProxyService.DisableProxy();
             MitmService.Stop();
             HeartbeatService.Stop();
@@ -227,6 +237,8 @@ public partial class App : Application
     private void OnDisableProxyRequested(object? sender, EventArgs e)
     {
         Debug.WriteLine("[App] Disable proxy requested by server");
+        ProxyEnforcementService.Instance.StopEnforcement();
+        BrowserPolicyService.DisablePolicies();
         ProxyService.DisableProxy();
         MitmService.Stop();
     }
@@ -249,6 +261,55 @@ public partial class App : Application
                 ProxyService.DisableProxy();
             }
         });
+    }
+
+    /// <summary>
+    /// When mitmproxy starts, conditionally enable proxy enforcement and browser policies.
+    /// Only enforces if the server-side enforceProxy flag is set.
+    /// </summary>
+    private void OnMitmStarted(object? sender, EventArgs e)
+    {
+        var port = MitmService.CurrentPort;
+        if (port == null) return;
+
+        if (RemoteStateService.Instance.AppConfig?.EnforceProxy == true)
+        {
+            Debug.WriteLine($"[App] Proxy enforcement enabled on port {port.Value}");
+            ProxyEnforcementService.Instance.StartEnforcement(port.Value);
+            BrowserPolicyService.EnablePolicies(port.Value);
+        }
+    }
+
+    /// <summary>
+    /// When mitmproxy stops, disable enforcement and browser policies.
+    /// </summary>
+    private void OnMitmStopped(object? sender, EventArgs e)
+    {
+        ProxyEnforcementService.Instance.StopEnforcement();
+        BrowserPolicyService.DisablePolicies();
+    }
+
+    /// <summary>
+    /// Re-enable proxy on network changes if enforcement is active.
+    /// Network changes (e.g. Wi-Fi reconnect) can reset system proxy settings.
+    /// </summary>
+    private void OnNetworkChangedForEnforcement(object? sender, EventArgs e)
+    {
+        if (!ProxyEnforcementService.Instance.IsEnforcing) return;
+
+        var port = MitmService.CurrentPort;
+        if (port == null || !MitmService.IsRunning) return;
+
+        Debug.WriteLine($"[App] Network changed while enforcement active - re-enabling proxy on port {port.Value}");
+        try
+        {
+            ProxyService.EnableProxy(port.Value);
+            BrowserPolicyService.EnablePolicies(port.Value);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[App] Failed to re-enable proxy after network change: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -559,9 +620,11 @@ public partial class App : Application
             Debug.WriteLine($"[App] Service stop error: {ex.Message}");
         }
 
-        // Critical cleanup - always disable proxy and stop mitmproxy
+        // Critical cleanup - stop enforcement, remove browser policies, disable proxy, and stop mitmproxy
         try
         {
+            ProxyEnforcementService.Instance.StopEnforcement();
+            BrowserPolicyService.DisablePolicies();
             ProxyService.DisableProxy();
             MitmService.Stop();
         }
@@ -571,6 +634,7 @@ public partial class App : Application
         }
 
         // Stop and dispose services
+        ProxyEnforcementService.Instance.Dispose();
         RemoteStateService.Stop();
         MitmService.Dispose();
         NetworkMonitorService.Dispose();
@@ -585,6 +649,9 @@ public partial class App : Application
         HeartbeatService.DisableProxyRequested -= OnDisableProxyRequested;
         RemoteStateService.ForceLogoutRequested -= OnForceLogoutRequested;
         RemoteStateService.SensorEnabledChanged -= OnSensorStateChanged;
+        MitmService.Started -= OnMitmStarted;
+        MitmService.Stopped -= OnMitmStopped;
+        NetworkMonitorService.NetworkChanged -= OnNetworkChangedForEnforcement;
 
         _mutex?.ReleaseMutex();
         _mutex?.Dispose();
@@ -664,6 +731,8 @@ public partial class App : Application
         // Windows is logging off or shutting down
         try
         {
+            ProxyEnforcementService.Instance.StopEnforcement();
+            BrowserPolicyService.DisablePolicies();
             ProxyService.DisableProxy();
             MitmService.Stop();
         }
@@ -685,6 +754,8 @@ public partial class App : Application
         // Try to clean up before crash
         try
         {
+            ProxyEnforcementService.Instance.StopEnforcement();
+            BrowserPolicyService.DisablePolicies();
             ProxyService.DisableProxy();
             MitmService.Stop();
         }

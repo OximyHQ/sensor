@@ -254,8 +254,25 @@ final class HeartbeatService: ObservableObject {
                 await restartProxy()
                 OximyLogger.shared.log(.HB_CMD_002, "Command executed", data: ["command": "restart_proxy"])
 
+                // Re-enable enforcement if configured
+                if RemoteStateService.shared.appConfig?.enforceProxy == true,
+                   let port = MITMService.shared.currentPort {
+                    ProxyEnforcementService.shared.startEnforcement(port: port)
+                    do {
+                        try await BrowserPolicyService.shared.enablePolicies(port: port)
+                    } catch {
+                        NSLog("[HeartbeatService] Failed to enable browser policies: %@", error.localizedDescription)
+                    }
+                }
+
             case "disable_proxy":
-                // Disable the system proxy
+                // Disable the system proxy and stop enforcement
+                ProxyEnforcementService.shared.stopEnforcement()
+                do {
+                    try await BrowserPolicyService.shared.disablePolicies()
+                } catch {
+                    NSLog("[HeartbeatService] Failed to disable browser policies: %@", error.localizedDescription)
+                }
                 do {
                     try await ProxyService.shared.disableProxy()
                     OximyLogger.shared.log(.HB_CMD_002, "Command executed", data: ["command": "disable_proxy"])
