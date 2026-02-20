@@ -734,6 +734,15 @@ class MITMService: ObservableObject {
                 NSLog("[MITMService] Process terminated, disabling proxy to prevent internet loss")
                 ProxyService.shared.disableProxySync()
 
+                // Stop enforcement so it doesn't fight the fail-open proxy disable.
+                // Enforcement will be re-enabled when mitmproxy successfully restarts.
+                ProxyEnforcementService.shared.stopEnforcement()
+                do {
+                    try await BrowserPolicyService.shared.disablePolicies()
+                } catch {
+                    NSLog("[MITMService] Failed to disable browser policies on exit: %@", error.localizedDescription)
+                }
+
                 if !isNormalExit {
                     self.lastError = "mitmproxy crashed (exit code \(status))"
                     NSLog("[MITMService] Process crashed with exit code %d", status)
