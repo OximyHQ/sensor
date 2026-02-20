@@ -311,22 +311,27 @@ class Violation:
     """Record of a detected PII violation.
 
     Attributes:
-        id:             Unique violation identifier (v_{timestamp}_{hex}).
-        timestamp:      ISO 8601 UTC timestamp of detection.
-        action:         Action taken -- "blocked", "warned", or "redacted".
-        policy_id:      ID of the policy that triggered.
-        policy_name:    Name of the policy that triggered.
-        rule_id:        ID of the rule that matched.
-        rule_name:      Name of the rule that matched.
-        rule_type:      Type of the matching rule ("data_type", "regex", "keyword").
-        severity:       Severity level from the matching rule.
-        detected_type:  PII type or pattern name that matched.
-        host:           Request target host.
-        path:           Request path.
-        method:         HTTP method (GET, POST, etc.).
-        bundle_id:      Client application bundle identifier.
-        retry_allowed:  Whether a retry within the TTL window will pass.
-        message:        Human-readable violation description.
+        id:               Unique violation identifier (v_{timestamp}_{hex}).
+        timestamp:        ISO 8601 UTC timestamp of detection.
+        action:           Action taken -- "blocked", "warned", or "redacted".
+        policy_id:        ID of the policy that triggered.
+        policy_name:      Name of the policy that triggered.
+        rule_id:          ID of the rule that matched.
+        rule_name:        Name of the rule that matched.
+        rule_type:        Type of the matching rule ("data_type", "regex", "keyword").
+        severity:         Severity level from the matching rule.
+        detected_type:    PII type or pattern name that matched.
+        host:             Request target host.
+        path:             Request path.
+        method:           HTTP method (GET, POST, etc.).
+        bundle_id:        Client application bundle identifier.
+        retry_allowed:    Whether a retry within the TTL window will pass.
+        message:          Human-readable violation description.
+        detection_method: Detection mechanism used; one of: presidio_ner,
+                          presidio_pattern, presidio_custom, fallback_regex,
+                          keyword, regex, ai_enforcement.
+        confidence_score: Presidio confidence score (0-1); 1.0 for
+                          regex/keyword matches.
     """
 
     id: str
@@ -345,6 +350,8 @@ class Violation:
     bundle_id: str
     retry_allowed: bool
     message: str
+    detection_method: str = ""
+    confidence_score: float = 0.0
 
 
 # =============================================================================
@@ -511,9 +518,11 @@ class EnforcementEngine:
 
         for policy in policies:
             for rule in policy.rules:
-                detected_type = self._match_rule(rule, body_text)
-                if detected_type is None:
+                match_result = self._match_rule(rule, body_text)
+                if match_result is None:
                     continue
+
+                detected_type, detection_method, confidence_score = match_result
 
                 # Build violation record
                 now = time.time()
@@ -539,6 +548,8 @@ class EnforcementEngine:
                         f"Detected {detected_type} in {method} {host}{path} "
                         f"[{policy.name} / {rule.name}]"
                     ),
+                    detection_method=detection_method,
+                    confidence_score=confidence_score,
                 )
 
                 # Apply policy mode
@@ -580,29 +591,35 @@ class EnforcementEngine:
         return False
 
     @staticmethod
-    def _match_rule(rule: EnforcementRule, body: str) -> str | None:
+    def _match_rule(rule: EnforcementRule, body: str) -> tuple[str, str, float] | None:
         """Check body against a single rule.
 
         Uses Presidio when available for data_type rules, falling back to
         regex patterns. For custom regex rules, always uses direct matching.
 
-        Returns the name of the first matched PII type / pattern,
-        or None if nothing matched.
+        Returns a tuple of (detected_type, detection_method, confidence_score)
+        for the first match, or None if nothing matched.  detection_method is
+        one of: "presidio_ner", "presidio_pattern", "presidio_custom",
+        "fallback_regex", "keyword", "regex".
         """
         if rule.type == "data_type":
             return EnforcementEngine._match_data_types(rule.data_types, body)
         elif rule.type in ("regex", "keyword"):
             for idx, pattern in enumerate(rule.patterns):
                 if pattern.search(body):
-                    return f"custom_pattern_{idx}"
+                    return (f"custom_pattern_{idx}", rule.type, 1.0)
         return None
 
     @staticmethod
-    def _match_data_types(data_types: list[str], body: str) -> str | None:
+    def _match_data_types(data_types: list[str], body: str) -> tuple[str, str, float] | None:
         """Match data types using Presidio or fallback regex.
 
         For large bodies (>100KB), skips NER-based detection (PERSON, LOCATION)
         to keep latency under 50ms.
+
+        Returns:
+            A tuple of (oximy_type, detection_method, confidence_score) on
+            match, or None if nothing matched.
         """
         analyzer = _get_analyzer()
         if analyzer is None:
@@ -622,8 +639,14 @@ class EnforcementEngine:
     @staticmethod
     def _match_data_types_presidio(
         analyzer, data_types: list[str], body: str
-    ) -> str | None:
-        """Use Presidio to detect PII types in body text."""
+    ) -> tuple[str, str, float] | None:
+        """Use Presidio to detect PII types in body text.
+
+        Returns:
+            A tuple of (oximy_type, detection_method, confidence_score) for the
+            first match, or None if nothing matched.  detection_method is one of:
+            "presidio_ner", "presidio_custom", or "presidio_pattern".
+        """
         # Determine which Presidio entity types to request
         requested_entities: list[str] = []
         skip_ner = len(body) > NER_SKIP_BODY_SIZE
@@ -649,23 +672,34 @@ class EnforcementEngine:
         for result in results:
             threshold = CONFIDENCE_THRESHOLDS.get(result.entity_type, 0.5)
             if result.score >= threshold:
-                # Skip NER entities (PERSON, LOCATION) inside file paths
-                if (result.entity_type in NER_ENTITY_TYPES
-                        and EnforcementEngine._is_inside_file_path(result, body)):
+                # Skip ANY entity type that falls inside a file/directory path
+                if EnforcementEngine._is_inside_file_path(result, body):
                     continue
                 oximy_type = PRESIDIO_TO_OXIMY.get(result.entity_type)
                 if oximy_type and oximy_type in data_types:
-                    return oximy_type
+                    # Determine detection sub-method
+                    if result.entity_type in NER_ENTITY_TYPES:
+                        method = "presidio_ner"
+                    elif result.entity_type in CUSTOM_ENTITY_TYPES:
+                        method = "presidio_custom"
+                    else:
+                        method = "presidio_pattern"
+                    return (oximy_type, method, result.score)
 
         return None
 
     @staticmethod
-    def _match_data_types_regex(data_types: list[str], body: str) -> str | None:
-        """Fallback regex-based PII matching."""
+    def _match_data_types_regex(data_types: list[str], body: str) -> tuple[str, str, float] | None:
+        """Fallback regex-based PII matching.
+
+        Returns:
+            A tuple of (oximy_type, "fallback_regex", 1.0) for the first match,
+            or None if nothing matched.
+        """
         for dt in data_types:
             pattern = FALLBACK_PII_PATTERNS.get(dt)
             if pattern and pattern.search(body):
-                return dt
+                return (dt, "fallback_regex", 1.0)
         return None
 
     # ------------------------------------------------------------------
