@@ -4502,6 +4502,8 @@ class OximyAddon:
                     "severity": violation.severity,
                     "detected_type": violation.detected_type,
                     "retry_allowed": violation.retry_allowed,
+                    "detection_method": violation.detection_method,
+                    "confidence_score": violation.confidence_score,
                 },
                 "request": {
                     "method": flow.request.method,

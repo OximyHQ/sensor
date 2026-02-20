@@ -904,9 +904,8 @@ class EnforcementEngine:
             threshold = CONFIDENCE_THRESHOLDS.get(result.entity_type, 0.5)
             if result.score < threshold:
                 continue
-            # Skip NER entities (PERSON, LOCATION) inside file paths
-            if (result.entity_type in NER_ENTITY_TYPES
-                    and EnforcementEngine._is_inside_file_path(result, body_text)):
+            # Skip entities inside file paths
+            if EnforcementEngine._is_inside_file_path(result, body_text):
                 continue
             oximy_type = PRESIDIO_TO_OXIMY.get(result.entity_type)
             if oximy_type and oximy_type in data_types_to_check:
