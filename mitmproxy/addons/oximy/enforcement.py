@@ -97,13 +97,35 @@ PRESIDIO_TO_OXIMY: dict[str, str] = {
     "AWS_KEY": "aws_key",
     "GITHUB_TOKEN": "github_token",
     "PRIVATE_KEY": "private_key",
+    # US Government IDs
+    "US_DRIVER_LICENSE": "us_driver_license",
+    "US_PASSPORT": "us_passport",
+    "US_BANK_NUMBER": "us_bank_number",
+    "US_ITIN": "us_itin",
+    # International
+    "IBAN_CODE": "iban_code",
+    "UK_NHS": "uk_nhs",
+    "SG_NRIC_FIN": "sg_nric",
+    "IN_PAN": "in_pan",
+    "AU_ABN": "au_abn",
+    "AU_ACN": "au_acn",
+    "AU_TFN": "au_tfn",
+    # Medical
+    "MEDICAL_LICENSE": "medical_license",
+    # Network
+    "URL": "url",
+    "DOMAIN_NAME": "domain_name",
+    # NER-based (detected via ML model)
+    "ORGANIZATION": "organization",
+    "DATE_TIME": "date_time",
+    "NRP": "nationality",
 }
 
 # Reverse mapping: Oximy name -> Presidio entity type
 OXIMY_TO_PRESIDIO: dict[str, str] = {v: k for k, v in PRESIDIO_TO_OXIMY.items()}
 
 # Confidence thresholds per detection method
-NER_ENTITY_TYPES = {"PERSON", "LOCATION"}
+NER_ENTITY_TYPES = {"PERSON", "LOCATION", "ORGANIZATION", "DATE_TIME", "NRP"}
 CUSTOM_ENTITY_TYPES = {"API_KEY", "AWS_KEY", "GITHUB_TOKEN", "PRIVATE_KEY"}
 
 CONFIDENCE_THRESHOLDS: dict[str, float] = {}
@@ -116,6 +138,12 @@ for _etype in NER_ENTITY_TYPES:
 # Custom patterns
 for _etype in CUSTOM_ENTITY_TYPES:
     CONFIDENCE_THRESHOLDS[_etype] = 0.7
+# Additional pattern-based types
+for _etype in ("US_DRIVER_LICENSE", "US_PASSPORT", "US_BANK_NUMBER", "US_ITIN",
+               "IBAN_CODE", "UK_NHS", "SG_NRIC_FIN", "IN_PAN", "AU_ABN", "AU_ACN", "AU_TFN",
+               "MEDICAL_LICENSE", "URL", "DOMAIN_NAME"):
+    CONFIDENCE_THRESHOLDS[_etype] = 0.5
+# ORGANIZATION, DATE_TIME, NRP already get 0.6 from the NER_ENTITY_TYPES loop above
 
 # Body size threshold above which NER is skipped for performance
 NER_SKIP_BODY_SIZE = 100_000  # 100 KB
