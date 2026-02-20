@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -15,6 +16,9 @@ namespace OximyWindows.Views;
 /// </summary>
 public partial class AppBlockWindow : Window
 {
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(IntPtr hObject);
+
     private readonly EnforcementRule _rule;
     private readonly bool _blocked;
     private bool _requestAccessMode;   // true after first click on ActionButton
@@ -72,11 +76,18 @@ public partial class AppBlockWindow : Window
             if (icon == null) return;
 
             using var bitmap = icon.ToBitmap();
-            var bitmapSource = System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap(
-                bitmap.GetHbitmap(), IntPtr.Zero, Int32Rect.Empty,
-                BitmapSizeOptions.FromWidthAndHeight(44, 44));
-
-            AppIconImage.Source = bitmapSource;
+            var hBitmap = bitmap.GetHbitmap();
+            try
+            {
+                var bitmapSource = System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap(
+                    hBitmap, IntPtr.Zero, Int32Rect.Empty,
+                    BitmapSizeOptions.FromWidthAndHeight(44, 44));
+                AppIconImage.Source = bitmapSource;
+            }
+            finally
+            {
+                DeleteObject(hBitmap);
+            }
         }
         catch (Exception ex)
         {
