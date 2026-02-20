@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Timers;
 using OximyWindows.Core;
 using OximyWindows.Models;
@@ -55,6 +56,36 @@ public class AppConfigFlags
 }
 
 /// <summary>
+/// Enforcement rule for an app or website, delivered via remote-state.json.
+/// </summary>
+public class EnforcementRule
+{
+    [JsonPropertyName("toolId")]
+    public string ToolId { get; set; } = "";
+
+    [JsonPropertyName("toolType")]
+    public string ToolType { get; set; } = "";        // "app" | "website"
+
+    [JsonPropertyName("displayName")]
+    public string DisplayName { get; set; } = "";
+
+    [JsonPropertyName("mode")]
+    public string Mode { get; set; } = "";            // "blocked" | "warn" | "flagged"
+
+    [JsonPropertyName("message")]
+    public string? Message { get; set; }
+
+    [JsonPropertyName("windowsAppId")]
+    public string? WindowsAppId { get; set; }         // process exe name on Windows
+
+    [JsonPropertyName("domain")]
+    public string? Domain { get; set; }
+
+    [JsonPropertyName("exemptDeviceIds")]
+    public string[]? ExemptDeviceIds { get; set; }
+}
+
+/// <summary>
 /// Remote state from Python addon (written to ~/.oximy/remote-state.json).
 /// The addon writes this file based on server-side configuration.
 /// </summary>
@@ -80,6 +111,9 @@ public class RemoteState
 
     [JsonPropertyName("appConfig")]
     public AppConfigFlags? AppConfig { get; set; }
+
+    [JsonPropertyName("enforcementRules")]
+    public List<EnforcementRule>? EnforcementRules { get; set; }
 }
 
 /// <summary>
@@ -99,10 +133,11 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
     private string? _tenantId;
     private string? _itSupport;
     private AppConfigFlags? _appConfig;
+    private List<EnforcementRule> _enforcementRules = new();
     private DateTime? _lastUpdate;
     private bool _isRunning;
     private bool _disposed;
-    private bool _isFetchingConfig;
+    private int _isFetchingConfig;  // 0 = idle, 1 = in-flight; use Interlocked for thread safety
     // Deduplication for one-shot commands (prevents re-execution on every poll)
     private bool _lastSeenForceSync;
     private bool _lastSeenClearCache;
@@ -153,6 +188,20 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
         get => _appConfig;
         private set => SetProperty(ref _appConfig, value);
     }
+
+    /// <summary>
+    /// Enforcement rules for apps and websites, delivered via remote-state.json.
+    /// </summary>
+    public List<EnforcementRule> EnforcementRules
+    {
+        get => _enforcementRules;
+        private set => SetProperty(ref _enforcementRules, value);
+    }
+
+    /// <summary>
+    /// Event fired when enforcement rules change.
+    /// </summary>
+    public event EventHandler? EnforcementRulesChanged;
 
     /// <summary>
     /// Last time the state was successfully read.
@@ -253,6 +302,14 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
             AppConfig = state.AppConfig;
             LastUpdate = DateTime.Now;
 
+            // Update enforcement rules and fire event if changed
+            var newRules = state.EnforcementRules ?? new List<EnforcementRule>();
+            if (!RulesEqual(_enforcementRules, newRules))
+            {
+                EnforcementRules = newRules;
+                EnforcementRulesChanged?.Invoke(this, EventArgs.Empty);
+            }
+
             // Update tenant tag if available
             if (!string.IsNullOrEmpty(state.TenantId))
                 OximyLogger.SetTag("tenant_id", state.TenantId);
@@ -315,9 +372,12 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
     /// </summary>
     private async Task FetchSensorConfigDirectlyAsync()
     {
-        if (_isFetchingConfig) return;
-        if (AppState.Instance.Phase != Phase.Connected) return;
-        _isFetchingConfig = true;
+        if (Interlocked.CompareExchange(ref _isFetchingConfig, 1, 0) != 0) return;
+        if (AppState.Instance.Phase != Phase.Connected)
+        {
+            Interlocked.Exchange(ref _isFetchingConfig, 0);
+            return;
+        }
 
         try
         {
@@ -444,8 +504,22 @@ public class RemoteStateService : INotifyPropertyChanged, IDisposable
         }
         finally
         {
-            _isFetchingConfig = false;
+            Interlocked.Exchange(ref _isFetchingConfig, 0);
         }
+    }
+
+    /// <summary>
+    /// Compare two enforcement rule lists by toolId+mode for change detection.
+    /// </summary>
+    private static bool RulesEqual(List<EnforcementRule> a, List<EnforcementRule> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (a[i].ToolId != b[i].ToolId || a[i].Mode != b[i].Mode)
+                return false;
+        }
+        return true;
     }
 
     /// <summary>

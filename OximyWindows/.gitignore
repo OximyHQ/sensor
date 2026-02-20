@@ -1,3 +1,6 @@
+# Secrets (never commit — use env vars in CI)
+src/OximyWindows/Secrets.cs
+
 # Build results
 bin/
 obj/
@@ -19,3 +22,6 @@ TestResults/
 
 # Installer output
 installer/Output/
+
+# Secrets (never commit)
+src/OximyWindows/Secrets.cs

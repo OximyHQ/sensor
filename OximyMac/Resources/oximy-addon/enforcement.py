@@ -540,9 +540,15 @@ class EnforcementEngine:
 
         with self._lock:
             policies = list(self._policies)
-
-        # Clean expired warn cache entries opportunistically
-        self._clean_warn_cache()
+            # Clean expired warn-cache entries while we already hold the lock,
+            # avoiding a separate lock acquisition (and the race it creates).
+            _now_clean = time.time()
+            _expired = [
+                k for k, ts in self._warn_cache.items()
+                if _now_clean - ts >= self.WARN_RETRY_TTL
+            ]
+            for k in _expired:
+                del self._warn_cache[k]
 
         for policy in policies:
             for rule in policy.rules:

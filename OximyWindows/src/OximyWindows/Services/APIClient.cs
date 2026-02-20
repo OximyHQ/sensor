@@ -470,6 +470,35 @@ public class APIClient
     }
 
     /// <summary>
+    /// Request access to a blocked tool (enforcement "Request Access" button).
+    /// POST /api/v1/devices/tool-access-requests
+    /// </summary>
+    public async Task RequestAccessAsync(string toolId, string reason, string? deviceId)
+    {
+        var deviceToken = AppState.Instance.DeviceToken;
+        if (string.IsNullOrEmpty(deviceToken)) return;
+
+        var payload = new Dictionary<string, string?>
+        {
+            ["toolId"]   = toolId,
+            ["reason"]   = reason,
+            ["deviceId"] = deviceId,
+        };
+
+        var json = JsonSerializer.Serialize(payload, _jsonOptions);
+        using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "devices/tool-access-requests")
+        {
+            Content = content
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", deviceToken);
+
+        var response = await _httpClient.SendAsync(request);
+        Debug.WriteLine($"[APIClient] RequestAccess response: {(int)response.StatusCode}");
+        // Best-effort — don't throw on error; let UI handle gracefully
+    }
+
+    /// <summary>
     /// Get current memory usage in MB.
     /// </summary>
     private static int? GetMemoryUsageMb()

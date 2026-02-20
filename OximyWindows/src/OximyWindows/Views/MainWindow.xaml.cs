@@ -228,6 +228,14 @@ public partial class MainWindow : Window
             ShowPopup();
     }
 
+    /// <summary>
+    /// Show a tray balloon tip (used for flagged app enforcement).
+    /// </summary>
+    public void ShowBalloonTip(string title, string message)
+    {
+        TrayIcon.ShowBalloonTip(title, message, BalloonIcon.Warning);
+    }
+
     protected override void OnClosed(EventArgs e)
     {
         // Unsubscribe from all events to prevent memory leaks
