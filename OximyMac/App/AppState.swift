@@ -277,6 +277,17 @@ final class AppState: ObservableObject {
                 do {
                     try await MITMService.shared.start()
                     NSLog("[AppState] MITMService started successfully")
+
+                    // Start enforcement if enabled and proxy port is available
+                    if RemoteStateService.shared.appConfig?.enforceProxy == true,
+                       let port = MITMService.shared.currentPort {
+                        ProxyEnforcementService.shared.startEnforcement(port: port)
+                        do {
+                            try await BrowserPolicyService.shared.enablePolicies(port: port)
+                        } catch {
+                            NSLog("[AppState] Failed to enable browser policies on start: %@", error.localizedDescription)
+                        }
+                    }
                 } catch {
                     NSLog("[AppState] Failed to start MITMService: %@", String(describing: error))
                     OximyLogger.shared.log(.MITM_FAIL_304, "MITM process start failed in startServices", data: [
