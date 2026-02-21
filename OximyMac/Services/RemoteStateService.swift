@@ -4,6 +4,7 @@ import Foundation
 extension Notification.Name {
     static let sensorEnabledChanged = Notification.Name("sensorEnabledChanged")
     static let enforcementRulesChanged = Notification.Name("enforcementRulesChanged")
+    static let uninstallCertificateChanged = Notification.Name("uninstallCertificateChanged")
 }
 
 /// App-level feature flags from sensor-config API
@@ -11,6 +12,7 @@ struct AppConfigFlags: Codable {
     let disableUserLogout: Bool?
     let disableQuit: Bool?
     let forceAutoStart: Bool?
+    let uninstallCertificate: Bool?
     let managedSetupComplete: Bool?
     let managedEnrollmentComplete: Bool?
     let managedCACertInstalled: Bool?
@@ -75,6 +77,7 @@ final class RemoteStateService: ObservableObject {
     @Published var isRunning = false
     @Published var appConfig: AppConfigFlags?
     @Published var enforcementRules: [EnforcementRule] = []
+    private var previousUninstallCertificate: Bool?
 
     // MARK: - Private
 
@@ -148,6 +151,16 @@ final class RemoteStateService: ObservableObject {
                 )
             }
 
+            // Detect uninstallCertificate transition
+            let newUninstallCert = state.appConfig?.uninstallCertificate ?? false
+            if previousUninstallCertificate != nil && newUninstallCert != previousUninstallCertificate {
+                NotificationCenter.default.post(
+                    name: .uninstallCertificateChanged,
+                    object: newUninstallCert
+                )
+            }
+            previousUninstallCertificate = newUninstallCert
+
             // Handle state changes
             if previousEnabled != state.sensorEnabled {
                 OximyLogger.shared.log(.STATE_STATE_001, "Sensor state changed", data: [
@@ -173,6 +186,23 @@ final class RemoteStateService: ObservableObject {
                 "error": error.localizedDescription
             ])
         }
+    }
+
+    // MARK: - External Updates
+
+    /// Accept appConfig updates from sources other than remote-state.json (e.g. heartbeat).
+    /// This ensures certificate reinstall commands are received even when mitmproxy is stopped.
+    func updateAppConfig(_ config: AppConfigFlags) {
+        appConfig = config
+
+        let newUninstallCert = config.uninstallCertificate ?? false
+        if previousUninstallCertificate != nil && newUninstallCert != previousUninstallCertificate {
+            NotificationCenter.default.post(
+                name: .uninstallCertificateChanged,
+                object: newUninstallCert
+            )
+        }
+        previousUninstallCertificate = newUninstallCert
     }
 
     private func handleForceLogout() {

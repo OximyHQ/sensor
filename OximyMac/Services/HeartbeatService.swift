@@ -106,6 +106,12 @@ final class HeartbeatService: ObservableObject {
                 print("[HeartbeatService] Workspace ID updated to '\(serverId)'")
             }
 
+            // Forward appConfig to RemoteStateService so certificate
+            // reinstall commands are received even when mitmproxy is stopped
+            if let appConfig = response.appConfig {
+                RemoteStateService.shared.updateAppConfig(appConfig)
+            }
+
             // Process any commands from the server
             if let commands = response.commands, !commands.isEmpty {
                 await processCommands(commands)
