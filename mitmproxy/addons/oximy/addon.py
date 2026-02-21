@@ -1167,6 +1167,20 @@ def _parse_sensor_config(raw: dict, addon_instance=None) -> dict:
             "executedAt": datetime.now(timezone.utc).isoformat(),
         }
 
+    # Handle app config toggle commands (disable_quit, disable_user_logout, force_auto_start, uninstall_certificate)
+    # These are config toggles — "execution" means "received and will be applied via appConfig"
+    for config_cmd_key in ("disable_quit", "disable_user_logout", "force_auto_start", "uninstall_certificate"):
+        config_cmd_val = commands.get(config_cmd_key)
+        if config_cmd_val is not None:
+            config_cmd_hash = _get_command_hash(config_cmd_key)
+            if config_cmd_hash not in _executed_command_hashes:
+                _executed_command_hashes.add(config_cmd_hash)
+                logger.info(f"Acknowledging {config_cmd_key} command (value={config_cmd_val})")
+                _command_results[config_cmd_key] = {
+                    "success": True,
+                    "executedAt": datetime.now(timezone.utc).isoformat(),
+                }
+
     # --- WRITE STATE FILE FOR SWIFT UI DISPLAY ---
     # Swift reads this for display purposes and handles force_logout + appConfig
     try:
