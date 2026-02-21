@@ -18,6 +18,16 @@ import logging
 import os
 import re
 import signal
+
+# Create urllib opener that bypasses system proxy settings.
+# This is critical: when Mac app enables system proxy pointing to mitmproxy,
+# the addon's own API calls would loop through itself without this bypass.
+#
+# Use an explicit SSL context with certifi's CA bundle. The bundled Python
+# does not use the macOS system keychain, so without this the default SSL
+# context falls back to /private/etc/ssl/cert.pem which may be missing
+# root CAs needed to verify api.oximy.com (hosted on Railway).
+import ssl as _ssl
 import subprocess
 import sys
 import tempfile
@@ -40,10 +50,15 @@ from mitmproxy import http
 from mitmproxy import tls
 from mitmproxy.net.encoding import decode as decode_content_encoding
 
-# Create urllib opener that bypasses system proxy settings.
-# This is critical: when Mac app enables system proxy pointing to mitmproxy,
-# the addon's own API calls would loop through itself without this bypass.
-_no_proxy_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+try:
+    import certifi as _certifi
+    _ssl_context = _ssl.create_default_context(cafile=_certifi.where())
+except ImportError:
+    _ssl_context = _ssl.create_default_context()
+_no_proxy_opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=_ssl_context),
+)
 
 # App version for X-Sensor-Version header (set by native app via environment)
 OXIMY_APP_VERSION = os.environ.get("OXIMY_APP_VERSION", "0.0.0")
