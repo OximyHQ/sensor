@@ -128,6 +128,7 @@ jobs:
           xcode-version: '15.2'
 
       - name: Import code signing certificate
+        id: codesign-certs
         uses: apple-actions/import-codesign-certs@v2
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
@@ -140,7 +141,7 @@ jobs:
           p12-password: ${{ secrets.INSTALLER_CERTIFICATE_PASSWORD }}
           create-keychain: false
           keychain: signing_temp
-          keychain-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          keychain-password: ${{ steps.codesign-certs.outputs.keychain-password }}
 
       - name: Setup Node.js (for create-dmg)
         uses: actions/setup-node@v4
