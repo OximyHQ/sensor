@@ -33,8 +33,10 @@ enum Constants {
     }
 
     // MARK: - CA Branding
-    static let caCommonName = "Oximy CA"
-    static let caOrganization = "Oximy Inc"
+    // Must match CONF_BASENAME in mitmproxy/options.py — mitmproxy generates
+    // the cert with CN=oximy, O=oximy when it starts before the app.
+    static let caCommonName = "oximy"
+    static let caOrganization = "oximy"
     static let caCountry = "US"
     static let caValidityDays = 3650  // 10 years
 
