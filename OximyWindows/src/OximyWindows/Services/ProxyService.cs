@@ -82,7 +82,7 @@ public class ProxyService : INotifyPropertyChanged
     /// <summary>
     /// Check if something is listening on a port (synchronous).
     /// </summary>
-    private static bool IsPortListening(int port)
+    public static bool IsPortListening(int port)
     {
         try
         {
@@ -103,6 +103,39 @@ public class ProxyService : INotifyPropertyChanged
         catch
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Get current proxy state from registry (for tamper detection).
+    /// </summary>
+    public static (bool isEnabled, int? port) GetCurrentProxyState()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(InternetSettingsKey);
+            if (key == null) return (false, null);
+
+            var proxyEnable = key.GetValue("ProxyEnable");
+            var isEnabled = proxyEnable is int enable && enable == 1;
+
+            int? port = null;
+            if (isEnabled)
+            {
+                var proxyServer = key.GetValue("ProxyServer") as string;
+                if (!string.IsNullOrEmpty(proxyServer))
+                {
+                    var parts = proxyServer.Split(':');
+                    if (parts.Length == 2 && int.TryParse(parts[1], out var p))
+                        port = p;
+                }
+            }
+
+            return (isEnabled, port);
+        }
+        catch
+        {
+            return (false, null);
         }
     }
 

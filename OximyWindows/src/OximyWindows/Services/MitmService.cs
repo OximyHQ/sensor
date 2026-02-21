@@ -497,6 +497,26 @@ public class MitmService : IDisposable
 
         OximyLogger.SetTag("mitm_running", "false");
 
+        // Stop enforcement so it doesn't fight the fail-open proxy disable.
+        // Enforcement will be re-enabled when mitmproxy successfully restarts.
+        // Each call is isolated so a failure in one doesn't block the other.
+        try
+        {
+            ProxyEnforcementService.Instance.StopEnforcement();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[MitmService] Failed to stop enforcement on exit: {ex.Message}");
+        }
+        try
+        {
+            BrowserPolicyService.DisablePolicies();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[MitmService] Failed to disable browser policies on exit: {ex.Message}");
+        }
+
         // Only skip restart if Stop() was called intentionally or we're disposing
         if (_intentionalStop || _disposed)
         {

@@ -127,6 +127,11 @@ class ProxyService: ObservableObject {
         }
     }
 
+    /// Get current proxy settings across all interfaces (for tamper detection)
+    func getCurrentProxyState() -> (enabled: Bool, port: Int?) {
+        return (isProxyEnabled, configuredPort)
+    }
+
     // MARK: - Enable Proxy
 
     /// Enable system proxy on all network interfaces

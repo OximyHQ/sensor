@@ -53,6 +53,9 @@ public class AppConfigFlags
 
     [JsonPropertyName("heartbeatInterval")]
     public int? HeartbeatInterval { get; set; }
+
+    [JsonPropertyName("enforceProxy")]
+    public bool? EnforceProxy { get; set; }
 }
 
 /// <summary>
