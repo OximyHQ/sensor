@@ -17,6 +17,16 @@ import logging
 import os
 import re
 import signal
+
+# Create urllib opener that bypasses system proxy settings.
+# This is critical: when Mac app enables system proxy pointing to mitmproxy,
+# the addon's own API calls would loop through itself without this bypass.
+#
+# Use an explicit SSL context with certifi's CA bundle. The bundled Python
+# does not use the macOS system keychain, so without this the default SSL
+# context falls back to /private/etc/ssl/cert.pem which may be missing
+# root CAs needed to verify api.oximy.com (hosted on Railway).
+import ssl as _ssl
 import subprocess
 import sys
 import tempfile
@@ -39,15 +49,6 @@ from mitmproxy import http
 from mitmproxy import tls
 from mitmproxy.net.encoding import decode as decode_content_encoding
 
-# Create urllib opener that bypasses system proxy settings.
-# This is critical: when Mac app enables system proxy pointing to mitmproxy,
-# the addon's own API calls would loop through itself without this bypass.
-#
-# Use an explicit SSL context with certifi's CA bundle. The bundled Python
-# does not use the macOS system keychain, so without this the default SSL
-# context falls back to /private/etc/ssl/cert.pem which may be missing
-# root CAs needed to verify api.oximy.com (hosted on Railway).
-import ssl as _ssl
 try:
     import certifi as _certifi
     _ssl_context = _ssl.create_default_context(cafile=_certifi.where())
