@@ -3873,28 +3873,39 @@ class OximyAddon:
         "diagnostics", "heartbeat", "ping", "health", "autosuggest",
     })
 
+    # Content types where we can redact text in-place in the request body.
+    # For everything else (gRPC, msgpack, etc.) we detect + log but can't
+    # rewrite the binary payload.
+    _REDACTABLE_CONTENT_TYPES = ("json", "text/", "x-www-form-urlencoded")
+
     def _enforce_request(self, flow: http.HTTPFlow) -> None:
         """Check request body for PII and redact it in-flight.
 
-        Runs after STEP 6 (capture marking). Only checks text-based content types.
-        PII is replaced with [REDACTED] placeholders in the request body before
-        it reaches the AI provider. The request always goes through — never 403.
+        Uses normalize_body() to decode ALL content types (JSON, gRPC, SSE,
+        msgpack, protobuf, base64, etc.) — the same decoder the capture
+        pipeline uses — so enforcement covers every AI tool/app.
+
+        For text-based content (JSON, text/*), PII is redacted in-place.
+        For binary formats (gRPC, msgpack), PII is detected and logged but
+        the binary body cannot be rewritten — violations are still reported.
 
         Safety guarantees:
           - Fail-open: any exception → request goes through unchanged.
-          - JSON-safe: if the original body was valid JSON and redaction breaks it,
-            we revert to the original body (fail-open).
-          - Only processes text content types (json, text/*, x-www-form-urlencoded).
+          - JSON-safe: if the original body was valid JSON and redaction
+            breaks it, we revert to the original body (fail-open).
           - Skips analytics/telemetry paths to avoid false positives.
           - Skips bodies > 1MB.
         """
         try:
             content_type = flow.request.headers.get("content-type", "")
-            if not any(ct in content_type for ct in ("json", "text/", "x-www-form-urlencoded")):
+
+            # Decode the body using the same normalizer the capture pipeline uses.
+            raw_body = flow.request.get_content(strict=False)
+            if not raw_body or len(raw_body) > 1_000_000:
                 return
 
-            body = flow.request.get_text(strict=False)
-            if not body or len(body) > 1_000_000:
+            body = normalize_body(raw_body, content_type)
+            if not body:
                 return
 
             # Skip analytics/telemetry endpoints (high false-positive rate)
@@ -3928,34 +3939,49 @@ class OximyAddon:
             if not detected_types:
                 return  # redact_pii found nothing (edge case — fail-open)
 
-            # SAFETY: Verify JSON integrity after redaction.
-            # If the original was valid JSON and redaction broke it, revert.
-            is_json = "json" in content_type
-            if is_json:
-                try:
-                    json.loads(redacted_body)
-                except (json.JSONDecodeError, ValueError):
-                    logger.warning(
-                        "[ENFORCEMENT] Redaction broke JSON structure — "
-                        "reverting to original body (fail-open)"
-                    )
-                    return  # Don't modify — fail-open
-
-            # Replace the request body with the redacted version
-            flow.request.set_text(redacted_body)
-
-            logger.warning(
-                "[ENFORCEMENT] REDACTED %s in %s %s%s",
-                detected_types, method, host, path[:60],
+            # Can we write the redacted text back into the request?
+            can_redact = any(
+                ct in content_type for ct in self._REDACTABLE_CONTENT_TYPES
             )
 
-            # Update violation action to reflect actual redaction
-            violation.action = "redacted"
-            violation.detected_type = ", ".join(detected_types)
-            violation.message = (
-                f"Redacted {', '.join(detected_types)} from "
-                f"{method} {host}{path[:60]}"
-            )
+            if can_redact:
+                # SAFETY: Verify JSON integrity after redaction.
+                is_json = "json" in content_type
+                if is_json:
+                    try:
+                        json.loads(redacted_body)
+                    except (json.JSONDecodeError, ValueError):
+                        logger.warning(
+                            "[ENFORCEMENT] Redaction broke JSON structure — "
+                            "reverting to original body (fail-open)"
+                        )
+                        return  # Don't modify — fail-open
+
+                flow.request.set_text(redacted_body)
+
+                logger.warning(
+                    "[ENFORCEMENT] REDACTED %s in %s %s%s",
+                    detected_types, method, host, path[:60],
+                )
+                violation.action = "redacted"
+                violation.detected_type = ", ".join(detected_types)
+                violation.message = (
+                    f"Redacted {', '.join(detected_types)} from "
+                    f"{method} {host}{path[:60]}"
+                )
+            else:
+                # Binary format (gRPC, msgpack, etc.) — can't rewrite, log only
+                logger.warning(
+                    "[ENFORCEMENT] DETECTED %s in %s %s%s "
+                    "(binary content-type '%s', cannot redact in-place)",
+                    detected_types, method, host, path[:60], content_type,
+                )
+                violation.action = "detected"
+                violation.detected_type = ", ".join(detected_types)
+                violation.message = (
+                    f"Detected {', '.join(detected_types)} in "
+                    f"{method} {host}{path[:60]}"
+                )
 
             # Mark the flow so the trace payload includes enforced=True
             flow.metadata["oximy_enforced"] = True
