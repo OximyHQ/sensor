@@ -436,6 +436,34 @@ class EnforcementEngine:
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
+    # Pre-loading
+    # ------------------------------------------------------------------
+
+    def preload(self) -> None:
+        """Eagerly load the Presidio AnalyzerEngine and spaCy model.
+
+        On first launch of a newly installed app, macOS Gatekeeper verifies
+        code signatures of native libraries (.so/.dylib) via OCSP/notarization
+        checks.  Presidio + spaCy pull in numpy, thinc, cymem, preshed, blis,
+        etc. — each with native extensions.  If these imports happen
+        synchronously in the asyncio event loop (via the lazy ``_get_analyzer``
+        call during enforcement), the event loop blocks for the duration of the
+        Gatekeeper scan, freezing all traffic.
+
+        Call this from a **background thread** during startup so that:
+          - The GIL is released during dlopen() → event loop keeps running.
+          - Gatekeeper verification completes before any enforcement check.
+          - On second launch the imports are cached and nearly instant.
+        """
+        try:
+            _get_analyzer()
+        except Exception:
+            logger.warning(
+                "Presidio pre-load failed (will retry on first enforcement call)",
+                exc_info=True,
+            )
+
+    # ------------------------------------------------------------------
     # Policy management
     # ------------------------------------------------------------------
 

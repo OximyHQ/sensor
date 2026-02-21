@@ -9,6 +9,7 @@ Pipeline: Passthrough → Whitelist → Blacklist → Capture to JSONL
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import fnmatch
 import gzip
@@ -741,6 +742,7 @@ def fetch_sensor_config(
     url: str = DEFAULT_SENSOR_CONFIG_URL,
     cache_path: str = DEFAULT_SENSOR_CONFIG_CACHE,
     addon_instance=None,
+    timeout: int = 10,
 ) -> dict:
     """Fetch sensor config from API and cache locally.
 
@@ -789,7 +791,7 @@ def fetch_sensor_config(
         if token:
             headers["Authorization"] = f"Bearer {token}"
         req = urllib.request.Request(url, headers=headers)
-        with _no_proxy_opener.open(req, timeout=10) as resp:
+        with _no_proxy_opener.open(req, timeout=timeout) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
 
         # SUCCESS: Reset circuit breaker
@@ -865,7 +867,13 @@ def _load_cached_config_or_passthrough(
             with open(cache_file, encoding="utf-8") as f:
                 cached = json.load(f)
             logger.info(f"FAIL-OPEN: Using cached sensor config from {cache_file}")
-            return _parse_sensor_config(cached, addon_instance)
+            config = _parse_sensor_config(cached, addon_instance)
+            # Log cached enforcement policies — stale rules are better than no rules.
+            logger.info(
+                "FAIL-OPEN: Using cached enforcement policies (API unreachable, %d policies)",
+                len(config.get("enforcementPolicies") or []),
+            )
+            return config
         except (json.JSONDecodeError, IOError) as cache_err:
             logger.warning(f"Failed to load cached config: {cache_err}")
 
@@ -2922,7 +2930,10 @@ class OximyAddon:
                     break  # Stop event was set
                 if not self._enabled:
                     break
-                self._refresh_config()
+                try:
+                    self._refresh_config()
+                except Exception:
+                    logger.error("Config refresh failed unexpectedly", exc_info=True)
 
         self._config_refresh_thread = threading.Thread(
             target=refresh_loop,
@@ -3089,7 +3100,7 @@ class OximyAddon:
         sensor_config = fetch_sensor_config(
             self._sensor_config_url,
             self._sensor_config_cache,
-            addon_instance=self
+            addon_instance=self,
         )
 
         # FAIL-OPEN: Check if this is a passthrough config (API down, no valid cache)
@@ -3119,6 +3130,15 @@ class OximyAddon:
         enforcement_policies = sensor_config.get("enforcementPolicies")
         if enforcement_policies is not None:
             self._enforcement.update_policies(enforcement_policies)
+            logger.info(
+                "[ENFORCEMENT] Loaded %d policies at startup (fail_open=%s)",
+                len(enforcement_policies), self._fail_open_passthrough,
+            )
+        else:
+            logger.warning(
+                "[ENFORCEMENT] No enforcementPolicies in startup config "
+                "(enforcement inactive until refresh)"
+            )
 
         # Load unknown apps cache for daily rate limiting
         self._no_parser_apps_cache = _load_no_parser_apps_cache()
@@ -3251,6 +3271,19 @@ class OximyAddon:
                     _write_proxy_state()
         else:
             logger.warning("Could not get proxy port - system proxy not configured")
+
+        # Pre-load Presidio/spaCy in a background thread.
+        # On first launch of a new build, macOS Gatekeeper verifies every native
+        # .so/.dylib. If this import happens synchronously in the event loop
+        # (during the first enforcement check), it blocks ALL traffic for the
+        # duration of the scan.  By starting the import in a daemon thread the
+        # GIL is released during dlopen(), the event loop stays responsive, and
+        # the verification completes before any enforcement check fires.
+        if self._enforcement:
+            t = threading.Thread(
+                target=self._enforcement.preload, daemon=True, name="presidio-preload"
+            )
+            t.start()
 
     def _delayed_proxy_activation(self):
         """Fallback activation if running() hook isn't called.
@@ -3439,38 +3472,42 @@ class OximyAddon:
             data.ignore_connection = True
             return
 
-        host = data.client_hello.sni or (data.context.server.address[0] if data.context.server.address else None)
-        if not host:
-            return
+        try:
+            host = data.client_hello.sni or (data.context.server.address[0] if data.context.server.address else None)
+            if not host:
+                return
 
-        # Whitelisted domains: always intercept TLS (unless cert-pinned)
-        if matches_domain(host, self._whitelist):
-            # Check for learned passthrough patterns (cert-pinned hosts)
+            # Whitelisted domains: always intercept TLS (unless cert-pinned)
+            if matches_domain(host, self._whitelist):
+                # Check for learned passthrough patterns (cert-pinned hosts)
+                if self._tls and self._tls.should_passthrough(host):
+                    data.ignore_connection = True
+                return
+
+            # Passthrough domains (*.apple.com, *.slack.com, etc.) must ALWAYS
+            # bypass TLS - even for discovery-eligible apps. These are services
+            # with cert pinning or that should never be intercepted.
             if self._tls and self._tls.should_passthrough(host):
                 data.ignore_connection = True
-            return
+                return
 
-        # Passthrough domains (*.apple.com, *.slack.com, etc.) must ALWAYS
-        # bypass TLS - even for discovery-eligible apps. These are services
-        # with cert pinning or that should never be intercepted.
-        if self._tls and self._tls.should_passthrough(host):
+            # Non-whitelisted, non-passthrough domain: check app discovery
+            # Allow TLS interception for no-parser apps that haven't been seen today
+            if self._should_intercept_for_discovery(data.context.client):
+                # Don't passthrough - we want to capture this for discovery
+                return
+
+            # Non-whitelisted, non-passthrough domain: check domain discovery
+            # Allow TLS interception for browsers visiting domains in catalog (allowed_host_origins)
+            if self._should_intercept_for_domain_discovery(host, data.context.client):
+                # Don't passthrough - we want to capture this for discovery
+                return
+
+            # Default: skip TLS interception for non-whitelisted domains
             data.ignore_connection = True
-            return
-
-        # Non-whitelisted, non-passthrough domain: check app discovery
-        # Allow TLS interception for no-parser apps that haven't been seen today
-        if self._should_intercept_for_discovery(data.context.client):
-            # Don't passthrough - we want to capture this for discovery
-            return
-
-        # Non-whitelisted, non-passthrough domain: check domain discovery
-        # Allow TLS interception for browsers visiting domains in catalog (allowed_host_origins)
-        if self._should_intercept_for_domain_discovery(host, data.context.client):
-            # Don't passthrough - we want to capture this for discovery
-            return
-
-        # Default: skip TLS interception for non-whitelisted domains
-        data.ignore_connection = True
+        except Exception:
+            logger.warning("tls_clienthello failed (fail-open: passthrough)", exc_info=True)
+            data.ignore_connection = True
 
     def _should_intercept_for_discovery(self, client) -> bool:
         """Check if we should intercept TLS for app discovery (non-browser, no parser, first today)."""
@@ -3865,7 +3902,11 @@ class OximyAddon:
         except AttributeError:
             enforcement_enabled = False
         if enforcement_enabled:
-            self._enforce_request(flow)
+            # Run in a thread pool so Presidio loading (which triggers macOS
+            # Gatekeeper verification of native libs on first launch) never
+            # blocks the event loop.  The individual flow waits, but other
+            # concurrent flows keep flowing.
+            await asyncio.to_thread(self._enforce_request, flow)
 
     # Path segments that indicate analytics/telemetry (skip enforcement)
     _ANALYTICS_PATH_KEYWORDS = frozenset({
