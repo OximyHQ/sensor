@@ -11,7 +11,7 @@ struct PlaybookInfo: Codable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, description, category, tags
-        case promptTemplate = "prompt_template"
+        case promptTemplate
     }
 }
 
