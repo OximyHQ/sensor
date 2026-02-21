@@ -124,6 +124,13 @@ install_packages_for_arch() {
 
         # Install mitmproxy from local source
         "$target_dir/bin/pip3" install "$MITMPROXY_SOURCE" jsonata-python psutil watchfiles sentry-sdk
+
+        # Install Presidio for PII detection/redaction in enforcement pipeline
+        echo "    Installing Presidio + spaCy for PII enforcement..."
+        "$target_dir/bin/pip3" install presidio-analyzer presidio-anonymizer
+
+        # Download the medium spaCy English model (~40MB) for NER.
+        PIP_DEFAULT_TIMEOUT=300 "$target_dir/bin/pip3" install https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl --timeout 300
     else
         echo "    Cross-installing packages for $arch_name (cannot run $arch_name Python on this host)..."
 
@@ -204,6 +211,18 @@ install_packages_for_arch() {
                 bcrypt==5.0.0 \
                 psutil \
                 watchfiles \
+                regex \
+                pyyaml \
+                murmurhash \
+                cymem \
+                preshed \
+                blis \
+                srsly \
+                thinc \
+                spacy \
+                pydantic-core \
+                wrapt \
+                numpy \
                 2>/dev/null || true
 
             # Extract wheels and overwrite the source architecture's compiled files
@@ -459,6 +478,14 @@ if [ "$BUILD_UNIVERSAL" = "true" ]; then
             VERIFICATION_FAILED=true
         else
             echo "✓ $arch_name has mitmproxy"
+        fi
+
+        # Check for presidio (PII enforcement)
+        if [ ! -d "$site_packages/presidio_analyzer" ]; then
+            echo "ERROR: $arch_name missing presidio_analyzer!"
+            VERIFICATION_FAILED=true
+        else
+            echo "✓ $arch_name has presidio_analyzer"
         fi
     done
 
