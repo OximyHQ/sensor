@@ -130,7 +130,7 @@ class MITMService: ObservableObject {
 
     /// Wait for mitmproxy to start listening on the specified port
     /// Returns true if port becomes available within timeout, false otherwise
-    private func waitForPortListening(_ port: Int, timeout: TimeInterval = 10.0) async -> Bool {
+    private func waitForPortListening(_ port: Int, timeout: TimeInterval = 30.0) async -> Bool {
         let startTime = Date()
         let checkInterval: UInt64 = 100_000_000 // 100ms in nanoseconds
 
@@ -197,6 +197,13 @@ class MITMService: ObservableObject {
         // CRITICAL: Kill any existing mitmproxy processes first
         // This ensures no zombie processes from previous runs interfere
         killAllMitmProcesses()
+
+        // CRITICAL: Disable system proxy immediately after killing old processes.
+        // The old mitmproxy's port is now dead but the system proxy may still point
+        // to it (cleanupOrphanedProxy() runs before killAll and may have seen the
+        // port as "active"). Without this, ALL internet traffic is blackholed until
+        // the new mitmproxy starts and configures the proxy in running().
+        ProxyService.shared.disableProxySync()
 
         // Find available port
         let port = findAvailablePort()
