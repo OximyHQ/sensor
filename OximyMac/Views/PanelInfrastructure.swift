@@ -7,6 +7,11 @@ import AppKit
 class InteractivePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    override func mouseDown(with event: NSEvent) {
+        makeKey()
+        super.mouseDown(with: event)
+    }
 }
 
 /// NSHostingView subclass that ensures first-click works on buttons inside non-key panels.
