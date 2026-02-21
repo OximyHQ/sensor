@@ -139,6 +139,8 @@ jobs:
           p12-file-base64: ${{ secrets.INSTALLER_CERTIFICATE }}
           p12-password: ${{ secrets.INSTALLER_CERTIFICATE_PASSWORD }}
           create-keychain: false
+          keychain: signing_temp
+          keychain-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
       - name: Setup Node.js (for create-dmg)
         uses: actions/setup-node@v4
