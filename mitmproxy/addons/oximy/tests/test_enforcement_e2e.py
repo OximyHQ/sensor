@@ -26,19 +26,14 @@ from __future__ import annotations
 import base64
 import gzip
 import json
-import re
 import urllib.parse
 
 try:
     from mitmproxy.addons.oximy.enforcement import EnforcementEngine
     from mitmproxy.addons.oximy.normalize import normalize_body
-    from mitmproxy.addons.oximy.normalize import normalize_grpc
-    from mitmproxy.addons.oximy.normalize import _normalize_sse
 except ImportError:
     from enforcement import EnforcementEngine
     from normalize import normalize_body
-    from normalize import normalize_grpc
-    from normalize import _normalize_sse
 
 
 # ---------------------------------------------------------------------------
