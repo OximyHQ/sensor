@@ -450,9 +450,7 @@ class EnforcementEngine:
                         compiled_patterns.append(re.compile(raw_pattern))
                     except re.error as exc:
                         logger.warning(
-                            "Skipping invalid regex in rule %s: %s (%s)",
-                            rule_dict.get("id", "?"),
-                            raw_pattern,
+                            "Skipping invalid regex pattern in enforcement rule: %s",
                             exc,
                         )
 

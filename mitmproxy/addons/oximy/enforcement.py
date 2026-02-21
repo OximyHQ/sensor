@@ -494,9 +494,7 @@ class EnforcementEngine:
                         compiled_patterns.append(re.compile(raw_pattern))
                     except re.error as exc:
                         logger.warning(
-                            "Skipping invalid regex in rule %s: %s (%s)",
-                            rule_dict.get("id", "?"),
-                            raw_pattern,
+                            "Skipping invalid regex pattern in enforcement rule: %s",
                             exc,
                         )
 
@@ -506,11 +504,9 @@ class EnforcementEngine:
                 for dt in data_types:
                     if dt not in OXIMY_TO_PRESIDIO:
                         logger.warning(
-                            "Unrecognized data_type '%s' in rule %s — "
+                            "Unrecognized data_type in enforcement rule — "
                             "will be skipped during detection. "
                             "Valid types: %s",
-                            dt,
-                            rule_dict.get("id", "?"),
                             ", ".join(sorted(OXIMY_TO_PRESIDIO.keys())),
                         )
 
