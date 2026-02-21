@@ -20,23 +20,27 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 
 try:
-    from watchfiles import watch, Change
+    from watchfiles import Change
+    from watchfiles import watch
     HAS_WATCHFILES = True
 except ImportError:
     HAS_WATCHFILES = False
 
 try:
     import sentry_service
-    from oximy_logger import oximy_log, EventCode
+    from oximy_logger import EventCode
+    from oximy_logger import oximy_log
 except ImportError:
     try:
         import sentry_service  # type: ignore[import]
-        from oximy_logger import oximy_log, EventCode  # type: ignore[import]
+        from oximy_logger import EventCode  # type: ignore[import]
+        from oximy_logger import oximy_log  # type: ignore[import]
     except ImportError:
         sentry_service = None  # type: ignore[assignment]
         oximy_log = None  # type: ignore[assignment]
@@ -369,8 +373,20 @@ class LocalDataCollector:
         # Apply config
         self._apply_config(config)
 
-        # Build proxy-bypassing opener
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        # Build proxy-bypassing opener with certifi CA bundle for SSL verification.
+        # The bundled Python does not use the macOS system keychain, so the default
+        # SSL context falls back to /private/etc/ssl/cert.pem which may be missing
+        # root CAs needed to verify api.oximy.com (hosted on Railway).
+        import ssl
+        try:
+            import certifi
+            _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            _ssl_ctx = ssl.create_default_context()
+        self._opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(context=_ssl_ctx),
+        )
 
         logger.info(
             f"LocalDataCollector initialized: "
@@ -997,14 +1013,14 @@ class LocalDataCollector:
         saved_offset = state.get("offset", 0)
         saved_mtime = state.get("mtime", 0)
 
-        # Skip if unchanged
-        if current_mtime == saved_mtime and saved_offset >= current_size:
-            return
-
-        # File shrank — reset offset
+        # File shrank — reset offset (check before skip to handle same-second rewrites)
         if saved_offset > current_size:
             logger.info(f"File shrank, resetting offset: {filepath}")
             saved_offset = 0
+
+        # Skip if unchanged
+        if current_mtime == saved_mtime and saved_offset >= current_size:
+            return
 
         new_offset = saved_offset
         line_number = 0

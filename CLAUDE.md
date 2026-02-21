@@ -20,7 +20,7 @@ Run tests before committing or building:
 python -m pytest mitmproxy/addons/oximy/tests/ -v --tb=short
 ```
 
-Expected: `271 passed`. Run specific files or patterns with `-k`:
+Expected: `663 passed`. Run specific files or patterns with `-k`:
 
 ```bash
 python -m pytest mitmproxy/addons/oximy/tests/test_addon.py -v
@@ -258,6 +258,10 @@ export SENTRY_PROJECT="your-project"
 
 **CI:** Add `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, and `SENTRY_PROJECT` as GitHub repository secrets.
 
+## Enforcement Pipeline
+
+`_parse_sensor_config()` must include `"enforcementPolicies": data.get("enforcementPolicies")` in its return dict — if omitted, the caller's `config.get("enforcementPolicies")` returns `None`, the guard fails, `update_policies()` is never called, and `_policies = []` (enforcement never fires). The startup `configure()` block also needs an explicit `update_policies()` call since the refresh loop has one but startup didn't.
+
 ## CA Certificate
 
 Apps use `~/.mitmproxy/oximy-ca-cert.pem` (auto-generated on first run via `CONF_BASENAME = "oximy"` in `mitmproxy/options.py`). If browsers show cert errors, install and trust the cert, then restart the browser.
@@ -288,3 +292,5 @@ Apps use `~/.mitmproxy/oximy-ca-cert.pem` (auto-generated on first run via `CONF
 - `addon.py`: `_state` is a module-level singleton — tests must save/restore `_state.sensor_active`
 - `normalize.py`: `contains_blacklist_word()` expects pre-lowercased words
 ```
+
+- Terminal proxy tracking (shell profile injection, launchctl env vars, env scripts, CA bundle) was removed — see commit `chore: remove terminal proxy tracking` to restore.

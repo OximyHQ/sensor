@@ -65,3 +65,4 @@ OximyWindows/src/OximyWindows/Secrets.cs
 ws_capture.py
 ws_capture.jsonl
 /.claude
+.worktrees

@@ -17,36 +17,58 @@ import logging
 import os
 import re
 import signal
-import stat
+
+# Create urllib opener that bypasses system proxy settings.
+# This is critical: when Mac app enables system proxy pointing to mitmproxy,
+# the addon's own API calls would loop through itself without this bypass.
+#
+# Use an explicit SSL context with certifi's CA bundle. The bundled Python
+# does not use the macOS system keychain, so without this the default SSL
+# context falls back to /private/etc/ssl/cert.pem which may be missing
+# root CAs needed to verify api.oximy.com (hosted on Railway).
+import ssl as _ssl
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from datetime import date, datetime, timezone
-from pathlib import Path
-from typing import IO
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
+from datetime import date
+from datetime import datetime
+from datetime import timezone
+from pathlib import Path
+from typing import IO
 from urllib.parse import urlparse
 
-from mitmproxy import connection, ctx, http, tls
+from mitmproxy import connection
+from mitmproxy import ctx
+from mitmproxy import http
+from mitmproxy import tls
 from mitmproxy.net.encoding import decode as decode_content_encoding
 
-# Create urllib opener that bypasses system proxy settings.
-# This is critical: when Mac app enables system proxy pointing to mitmproxy,
-# the addon's own API calls would loop through itself without this bypass.
-_no_proxy_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+try:
+    import certifi as _certifi
+    _ssl_context = _ssl.create_default_context(cafile=_certifi.where())
+except ImportError:
+    _ssl_context = _ssl.create_default_context()
+_no_proxy_opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=_ssl_context),
+)
 
 # App version for X-Sensor-Version header (set by native app via environment)
 OXIMY_APP_VERSION = os.environ.get("OXIMY_APP_VERSION", "0.0.0")
 
 # Import ProcessResolver - handle both package and script modes
 try:
-    from .process import ClientProcess, ProcessResolver
+    from .process import ClientProcess
+    from .process import ProcessResolver
 except ImportError:
-    from process import ClientProcess, ProcessResolver
+    from process import ClientProcess
+    from process import ProcessResolver
 
 # Import normalize - handle both package and script modes
 try:
@@ -62,13 +84,29 @@ except ImportError:
 
 # Import structured logging - handle both package and script modes
 try:
-    from .oximy_logger import EventCode as OximyEventCode, oximy_log, set_context as set_log_context, close as close_logger
-    from .oximy_logger import _BETTERSTACK_LOGS_TOKEN, _BETTERSTACK_LOGS_HOST
     from . import sentry_service
+    from .oximy_logger import _BETTERSTACK_LOGS_HOST
+    from .oximy_logger import _BETTERSTACK_LOGS_TOKEN
+    from .oximy_logger import close as close_logger
+    from .oximy_logger import EventCode as OximyEventCode
+    from .oximy_logger import oximy_log
+    from .oximy_logger import set_context as set_log_context
 except ImportError:
-    from oximy_logger import EventCode as OximyEventCode, oximy_log, set_context as set_log_context, close as close_logger
-    from oximy_logger import _BETTERSTACK_LOGS_TOKEN, _BETTERSTACK_LOGS_HOST  # type: ignore[import]
     import sentry_service
+    from oximy_logger import _BETTERSTACK_LOGS_HOST  # type: ignore[import]
+    from oximy_logger import _BETTERSTACK_LOGS_TOKEN  # type: ignore[import]
+    from oximy_logger import close as close_logger
+    from oximy_logger import EventCode as OximyEventCode
+    from oximy_logger import oximy_log
+    from oximy_logger import set_context as set_log_context
+
+# Import enforcement engine - handle both package and script modes
+try:
+    from .enforcement import EnforcementEngine
+    from .enforcement import Violation
+except ImportError:
+    from enforcement import EnforcementEngine
+    from enforcement import Violation
 
 logging.basicConfig(
     level=logging.INFO,
@@ -92,23 +130,10 @@ OXIMY_UPLOAD_STATE_FILE = OXIMY_DIR / "upload-state.json"
 OXIMY_PASSTHROUGH_CACHE = OXIMY_DIR / "learned-passthrough.json"
 OXIMY_FORCE_SYNC_TRIGGER = OXIMY_DIR / "force-sync"
 OXIMY_SENSOR_CONFIG_CACHE = OXIMY_DIR / "sensor-config.json"
-OXIMY_PROXY_PORT_FILE = OXIMY_DIR / "proxy-port"
-OXIMY_ENV_SCRIPT = OXIMY_DIR / "oximy_env.sh"
-OXIMY_COMBINED_CA_BUNDLE = OXIMY_DIR / "combined-ca-bundle.pem"
 OXIMY_CA_CERT = OXIMY_DIR / "oximy-ca-cert.pem"
 OXIMY_NO_PARSER_APPS_CACHE = OXIMY_DIR / "no-parser-apps.json"
 OXIMY_NO_PARSER_DOMAINS_CACHE = OXIMY_DIR / "no-parser-domains.json"
-
-# Shell profile markers for idempotent injection/removal
-_SHELL_MARKER = "# --- Oximy (do not edit this block) ---"
-_SHELL_END_MARKER = "# --- End Oximy ---"
-
-# Environment variables to set via launchctl for GUI-spawned processes (macOS only)
-_LAUNCHCTL_ENV_VARS = (
-    "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
-    "NO_PROXY", "no_proxy",
-    "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-)
+OXIMY_VIOLATIONS_FILE = OXIMY_DIR / "violations.json"
 
 # Maximum bytes to accumulate from streamed (SSE) responses before stopping capture
 _MAX_STREAM_CAPTURE_BYTES = 100 * 1024 * 1024  # 100 MB
@@ -409,477 +434,6 @@ def _atomic_write(target: Path, content: str, mode: int = 0o600) -> None:
         raise
 
 
-def _write_proxy_port_file(port: str) -> None:
-    """Write proxy port to file for terminal env script discovery."""
-    try:
-        _atomic_write(OXIMY_PROXY_PORT_FILE, port)
-        logger.debug(f"Proxy port file written: {port}")
-    except (IOError, OSError) as e:
-        logger.warning(f"Failed to write proxy port file: {e}")
-
-
-def _delete_proxy_port_file() -> None:
-    """Delete proxy port file on shutdown so terminal env script deactivates."""
-    try:
-        if OXIMY_PROXY_PORT_FILE.exists():
-            OXIMY_PROXY_PORT_FILE.unlink()
-            logger.debug("Proxy port file deleted")
-    except (IOError, OSError) as e:
-        logger.warning(f"Failed to delete proxy port file: {e}")
-
-
-# =============================================================================
-# TERMINAL ENVIRONMENT SETUP
-# =============================================================================
-
-def _setup_terminal_env() -> None:
-    """Write env script, generate combined CA bundle, and inject shell profiles.
-
-    Idempotent — safe to call on every startup. Shell profile injection is
-    skipped if the marker block already exists.
-    """
-    try:
-        _write_env_script()
-        _generate_combined_ca_bundle()
-        if sys.platform == "darwin":
-            _inject_shell_profiles([
-                Path.home() / ".zshrc",
-                Path.home() / ".bashrc",
-            ])
-            _set_launchctl_env()
-        elif sys.platform == "win32":
-            _write_windows_env_scripts()
-            _inject_powershell_profiles()
-            _inject_cmd_autorun()
-    except Exception as e:
-        logger.warning(f"Terminal env setup failed (non-fatal): {e}")
-
-
-def _set_launchctl_env() -> None:
-    """Set proxy and CA env vars in launchd so GUI-spawned processes inherit them.
-
-    macOS only. launchctl setenv sets variables in the launchd environment,
-    which is inherited by all newly launched processes (including those started
-    by GUI apps like VS Code, Cursor, etc.). This complements shell profile
-    injection which only covers interactive terminal sessions.
-    """
-    if sys.platform != "darwin":
-        return
-
-    port = _state.proxy_port
-    if not port:
-        return
-
-    proxy_url = f"http://{PROXY_HOST}:{port}"
-    no_proxy = "localhost,127.0.0.1,::1,.local"
-    ca_cert = str(OXIMY_CA_CERT)
-    ca_bundle = str(OXIMY_COMBINED_CA_BUNDLE)
-
-    env_values = {
-        "HTTP_PROXY": proxy_url, "HTTPS_PROXY": proxy_url,
-        "http_proxy": proxy_url, "https_proxy": proxy_url,
-        "NO_PROXY": no_proxy, "no_proxy": no_proxy,
-        "NODE_EXTRA_CA_CERTS": ca_cert,
-        "SSL_CERT_FILE": ca_bundle,
-        "REQUESTS_CA_BUNDLE": ca_bundle,
-        "CURL_CA_BUNDLE": ca_bundle,
-    }
-
-    errors = 0
-    for name, value in env_values.items():
-        try:
-            subprocess.run(
-                ["launchctl", "setenv", name, value],
-                capture_output=True, timeout=5,
-            )
-        except (subprocess.SubprocessError, OSError) as e:
-            errors += 1
-            if errors == 1:
-                logger.debug(f"launchctl setenv failed for {name}: {e}")
-
-    if errors == 0:
-        logger.info(f"launchctl env vars set ({len(env_values)} vars, proxy={proxy_url})")
-    else:
-        logger.warning(f"launchctl setenv: {errors}/{len(env_values)} calls failed")
-
-
-def _unset_launchctl_env() -> None:
-    """Remove proxy and CA env vars from launchd environment.
-
-    macOS only. Called during shutdown and emergency cleanup to prevent
-    processes launched after proxy shutdown from trying to use a dead proxy.
-    """
-    if sys.platform != "darwin":
-        return
-
-    for name in _LAUNCHCTL_ENV_VARS:
-        try:
-            subprocess.run(
-                ["launchctl", "unsetenv", name],
-                capture_output=True, timeout=5,
-            )
-        except (subprocess.SubprocessError, OSError):
-            pass
-
-    logger.info("launchctl env vars cleared")
-
-
-def _write_env_script() -> None:
-    """Write the shell env script sourced by ~/.zshrc to set proxy + CA trust vars."""
-    script = """\
-# Auto-generated by Oximy. Do not edit.
-# Sourced by shell profile to route terminal traffic through Oximy proxy.
-
-# --- Cleanup function: unset all Oximy proxy/CA env vars ---
-_oximy_cleanup() {
-    unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
-    unset NO_PROXY no_proxy
-    unset NODE_EXTRA_CA_CERTS SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE
-    unset OXIMY_PROXY_ACTIVE
-    # Also clear launchctl env vars so GUI-spawned processes stop using dead proxy
-    if command -v launchctl >/dev/null 2>&1; then
-        for _v in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy \
-                  NO_PROXY no_proxy NODE_EXTRA_CA_CERTS SSL_CERT_FILE \
-                  REQUESTS_CA_BUNDLE CURL_CA_BUNDLE; do
-            launchctl unsetenv "$_v" 2>/dev/null
-        done
-        unset _v
-    fi
-}
-
-# --- Pre-command hook: auto-unset vars when proxy is gone ---
-_oximy_check() {
-    if [ -n "$OXIMY_PROXY_ACTIVE" ] && [ ! -f "$HOME/.oximy/proxy-port" ]; then
-        _oximy_cleanup
-    fi
-}
-
-# Install the check hook (works in both zsh and bash)
-if [ -n "$ZSH_VERSION" ]; then
-    autoload -Uz add-zsh-hook 2>/dev/null
-    if typeset -f add-zsh-hook >/dev/null 2>&1; then
-        add-zsh-hook precmd _oximy_check
-    fi
-elif [ -n "$BASH_VERSION" ]; then
-    case "$PROMPT_COMMAND" in
-        *_oximy_check*) ;;  # already installed
-        "") PROMPT_COMMAND="_oximy_check" ;;
-        *)  PROMPT_COMMAND="_oximy_check;$PROMPT_COMMAND" ;;
-    esac
-fi
-
-# --- Set proxy vars (only if proxy is currently running) ---
-_oximy_port_file="$HOME/.oximy/proxy-port"
-if [ ! -f "$_oximy_port_file" ]; then
-    _oximy_cleanup
-    unset _oximy_port_file
-    return 0
-fi
-_oximy_port=$(cat "$_oximy_port_file" 2>/dev/null)
-if [ -z "$_oximy_port" ]; then
-    _oximy_cleanup
-    unset _oximy_port_file _oximy_port
-    return 0
-fi
-
-_oximy_ca="$HOME/.oximy/combined-ca-bundle.pem"
-[ ! -f "$_oximy_ca" ] && { unset _oximy_port_file _oximy_port _oximy_ca; return 0; }
-
-# Proxy routing (both cases — curl uses lowercase, most libraries use uppercase)
-export HTTP_PROXY="http://127.0.0.1:${_oximy_port}"
-export HTTPS_PROXY="http://127.0.0.1:${_oximy_port}"
-export http_proxy="$HTTP_PROXY"
-export https_proxy="$HTTPS_PROXY"
-export NO_PROXY="localhost,127.0.0.1,::1,.local"
-export no_proxy="$NO_PROXY"
-
-# Node.js — NODE_EXTRA_CA_CERTS appends to built-in CAs (no combined bundle needed)
-export NODE_EXTRA_CA_CERTS="$HOME/.oximy/oximy-ca-cert.pem"
-
-# Python (requests, httpx, urllib3), Ruby, Go, general OpenSSL — these REPLACE the
-# default CA store, so a combined bundle (system CAs + Oximy CA) is required.
-export SSL_CERT_FILE="$_oximy_ca"
-export REQUESTS_CA_BUNDLE="$_oximy_ca"
-
-# curl
-export CURL_CA_BUNDLE="$_oximy_ca"
-
-# Sentinel so the precmd hook knows vars were set
-export OXIMY_PROXY_ACTIVE=1
-
-unset _oximy_port_file _oximy_port _oximy_ca
-"""
-    _atomic_write(OXIMY_ENV_SCRIPT, script, mode=0o644)
-    logger.debug("Terminal env script written")
-
-
-def _generate_combined_ca_bundle() -> None:
-    """Build PEM bundle: system root CAs + Oximy CA.
-
-    Required because SSL_CERT_FILE/REQUESTS_CA_BUNDLE/CURL_CA_BUNDLE replace
-    (not append to) the default CA store.
-    """
-    if not OXIMY_CA_CERT.exists():
-        logger.debug("Oximy CA cert not found, skipping combined bundle generation")
-        return
-
-    oximy_ca = OXIMY_CA_CERT.read_text(encoding="utf-8")
-    parts: list[str] = []
-
-    if sys.platform == "darwin":
-        # Export macOS system root certificates
-        for keychain in (
-            "/System/Library/Keychains/SystemRootCertificates.keychain",
-            "/Library/Keychains/System.keychain",
-        ):
-            try:
-                result = subprocess.run(
-                    ["security", "find-certificate", "-a", "-p", keychain],
-                    capture_output=True, text=True, timeout=30,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    parts.append(result.stdout)
-            except (subprocess.SubprocessError, OSError):
-                pass
-    elif sys.platform == "win32":
-        # Export Windows system root CAs via PowerShell
-        try:
-            result = subprocess.run(
-                [
-                    "powershell.exe", "-NoProfile", "-Command",
-                    "Get-ChildItem -Path Cert:\\LocalMachine\\Root | ForEach-Object { "
-                    "'-----BEGIN CERTIFICATE-----'; "
-                    "[Convert]::ToBase64String($_.RawData, 'InsertLineBreaks'); "
-                    "'-----END CERTIFICATE-----'; '' }",
-                ],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                parts.append(result.stdout)
-        except (subprocess.SubprocessError, OSError):
-            pass
-
-    parts.append(oximy_ca)
-    _atomic_write(OXIMY_COMBINED_CA_BUNDLE, "\n".join(parts))
-    logger.debug("Combined CA bundle generated")
-
-
-def _inject_shell_profiles(profiles: list[Path]) -> None:
-    """Inject source line into shell profiles (macOS: .zshrc, .bashrc)."""
-    injection = (
-        f"\n{_SHELL_MARKER}\n"
-        f'[ -f "$HOME/.oximy/oximy_env.sh" ] && . "$HOME/.oximy/oximy_env.sh"\n'
-        f"{_SHELL_END_MARKER}\n"
-    )
-
-    for profile in profiles:
-        try:
-            content = profile.read_text(encoding="utf-8") if profile.exists() else ""
-
-            # Idempotent
-            if _SHELL_MARKER in content:
-                continue
-
-            if content and not content.endswith("\n"):
-                content += "\n"
-            content += injection
-
-            _atomic_write(profile, content, mode=profile.stat().st_mode & 0o7777 if profile.exists() else 0o644)
-            logger.info(f"Injected shell profile: {profile.name}")
-        except (IOError, OSError) as e:
-            logger.warning(f"Failed to inject {profile.name}: {e}")
-
-
-def _write_windows_env_scripts() -> None:
-    """Write PowerShell and CMD env scripts for Windows."""
-    ps1 = r"""# Auto-generated by Oximy. Do not edit.
-$portFile = Join-Path $env:USERPROFILE '.oximy\proxy-port'
-if (-not (Test-Path $portFile)) { return }
-$port = (Get-Content $portFile -Raw).Trim()
-if ([string]::IsNullOrEmpty($port)) { return }
-$caBundle = Join-Path $env:USERPROFILE '.oximy\combined-ca-bundle.pem'
-if (-not (Test-Path $caBundle)) { return }
-$caCert = Join-Path $env:USERPROFILE '.oximy\oximy-ca-cert.pem'
-$env:HTTP_PROXY = "http://127.0.0.1:$port"
-$env:HTTPS_PROXY = "http://127.0.0.1:$port"
-$env:http_proxy = $env:HTTP_PROXY
-$env:https_proxy = $env:HTTPS_PROXY
-$env:NO_PROXY = 'localhost,127.0.0.1,::1'
-$env:no_proxy = $env:NO_PROXY
-$env:NODE_EXTRA_CA_CERTS = $caCert
-$env:SSL_CERT_FILE = $caBundle
-$env:REQUESTS_CA_BUNDLE = $caBundle
-$env:CURL_CA_BUNDLE = $caBundle
-"""
-    _atomic_write(OXIMY_DIR / "oximy_env.ps1", ps1, mode=0o644)
-
-    cmd = r"""@echo off
-REM Auto-generated by Oximy. Do not edit.
-set "OXIMY_PORT_FILE=%USERPROFILE%\.oximy\proxy-port"
-if not exist "%OXIMY_PORT_FILE%" goto :eof
-set /p OXIMY_PORT=<"%OXIMY_PORT_FILE%"
-if "%OXIMY_PORT%"=="" goto :eof
-set "OXIMY_CA=%USERPROFILE%\.oximy\combined-ca-bundle.pem"
-if not exist "%OXIMY_CA%" goto :eof
-set "OXIMY_CERT=%USERPROFILE%\.oximy\oximy-ca-cert.pem"
-set "HTTP_PROXY=http://127.0.0.1:%OXIMY_PORT%"
-set "HTTPS_PROXY=http://127.0.0.1:%OXIMY_PORT%"
-set "http_proxy=%HTTP_PROXY%"
-set "https_proxy=%HTTPS_PROXY%"
-set "NO_PROXY=localhost,127.0.0.1,::1"
-set "no_proxy=%NO_PROXY%"
-set "NODE_EXTRA_CA_CERTS=%OXIMY_CERT%"
-set "SSL_CERT_FILE=%OXIMY_CA%"
-set "REQUESTS_CA_BUNDLE=%OXIMY_CA%"
-set "CURL_CA_BUNDLE=%OXIMY_CA%"
-set "OXIMY_PORT_FILE="
-set "OXIMY_PORT="
-set "OXIMY_CA="
-set "OXIMY_CERT="
-"""
-    _atomic_write(OXIMY_DIR / "oximy_env.cmd", cmd, mode=0o644)
-    logger.debug("Windows env scripts written")
-
-
-def _inject_powershell_profiles() -> None:
-    """Inject dot-source into PowerShell profiles (5.1 + Core 7)."""
-    docs = Path.home() / "Documents"
-    ps1_path = str(OXIMY_DIR / "oximy_env.ps1")
-    injection = (
-        f"\n{_SHELL_MARKER}\n"
-        f"if (Test-Path '{ps1_path}') {{ . '{ps1_path}' }}\n"
-        f"{_SHELL_END_MARKER}\n"
-    )
-
-    for profile in (
-        docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
-        docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
-    ):
-        try:
-            profile.parent.mkdir(parents=True, exist_ok=True)
-            content = profile.read_text(encoding="utf-8") if profile.exists() else ""
-            if _SHELL_MARKER in content:
-                continue
-            if content and not content.endswith("\n"):
-                content += "\n"
-            content += injection
-            _atomic_write(profile, content, mode=0o644)
-            logger.info(f"Injected PowerShell profile: {profile}")
-        except (IOError, OSError) as e:
-            logger.warning(f"Failed to inject PowerShell profile {profile}: {e}")
-
-
-def _inject_cmd_autorun() -> None:
-    """Set CMD AutoRun registry value to source oximy_env.cmd on every cmd.exe launch."""
-    try:
-        import winreg  # noqa: F811
-        cmd_path = str(OXIMY_DIR / "oximy_env.cmd")
-        key_path = r"Software\Microsoft\Command Processor"
-
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS) as key:
-            try:
-                existing, _ = winreg.QueryValueEx(key, "AutoRun")
-            except FileNotFoundError:
-                existing = ""
-
-            if cmd_path.lower() in (existing or "").lower():
-                return  # Already injected
-
-            new_value = f'"{cmd_path}"' if not existing else f'{existing} & "{cmd_path}"'
-            winreg.SetValueEx(key, "AutoRun", 0, winreg.REG_SZ, new_value)
-            logger.info(f"Injected CMD AutoRun: {new_value}")
-    except Exception as e:
-        logger.debug(f"CMD AutoRun injection skipped: {e}")
-
-
-def _teardown_terminal_env() -> None:
-    """Remove shell profile injections and generated files on shutdown."""
-    try:
-        if sys.platform == "darwin":
-            _unset_launchctl_env()
-            _remove_shell_profile_injections([
-                Path.home() / ".zshrc",
-                Path.home() / ".bashrc",
-            ])
-        elif sys.platform == "win32":
-            docs = Path.home() / "Documents"
-            _remove_shell_profile_injections([
-                docs / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
-                docs / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
-            ])
-            _remove_cmd_autorun()
-
-        # Remove generated env scripts and CA bundle
-        for path in (OXIMY_ENV_SCRIPT, OXIMY_COMBINED_CA_BUNDLE,
-                      OXIMY_DIR / "oximy_env.ps1", OXIMY_DIR / "oximy_env.cmd"):
-            try:
-                if path.exists():
-                    path.unlink()
-            except OSError:
-                pass
-    except Exception as e:
-        logger.warning(f"Terminal env teardown failed (non-fatal): {e}")
-
-
-def _remove_shell_profile_injections(profiles: list[Path]) -> None:
-    """Remove the Oximy marker block from shell profiles."""
-    for profile in profiles:
-        try:
-            if not profile.exists():
-                continue
-            content = profile.read_text(encoding="utf-8")
-            if _SHELL_MARKER not in content:
-                continue
-
-            start = content.find(_SHELL_MARKER)
-            end = content.find(_SHELL_END_MARKER)
-            if start < 0 or end < 0:
-                continue
-
-            remove_end = end + len(_SHELL_END_MARKER)
-            # Consume surrounding newlines
-            if start > 0 and content[start - 1] == "\n":
-                start -= 1
-            if remove_end < len(content) and content[remove_end] == "\n":
-                remove_end += 1
-
-            content = content[:start] + content[remove_end:]
-            _atomic_write(profile, content, mode=profile.stat().st_mode & 0o7777)
-            logger.info(f"Removed shell profile injection: {profile.name}")
-        except (IOError, OSError) as e:
-            logger.warning(f"Failed to remove injection from {profile.name}: {e}")
-
-
-def _remove_cmd_autorun() -> None:
-    """Remove Oximy entry from CMD AutoRun registry value."""
-    try:
-        import winreg
-        cmd_path = str(OXIMY_DIR / "oximy_env.cmd")
-        key_path = r"Software\Microsoft\Command Processor"
-
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS) as key:
-            try:
-                existing, _ = winreg.QueryValueEx(key, "AutoRun")
-            except FileNotFoundError:
-                return
-
-            if not existing or cmd_path.lower() not in existing.lower():
-                return
-
-            cleaned = existing
-            for pattern in (f' & "{cmd_path}"', f'"{cmd_path}" & ', f'"{cmd_path}"'):
-                cleaned = cleaned.replace(pattern, "")
-            cleaned = cleaned.strip()
-
-            if not cleaned:
-                winreg.DeleteValue(key, "AutoRun")
-            else:
-                winreg.SetValueEx(key, "AutoRun", 0, winreg.REG_SZ, cleaned)
-            logger.info("Removed CMD AutoRun injection")
-    except Exception as e:
-        logger.debug(f"CMD AutoRun removal skipped: {e}")
-
-
 def _write_proxy_state() -> None:
     """Write current proxy state to remote-state.json for Swift app."""
     try:
@@ -914,8 +468,6 @@ def _emergency_cleanup() -> None:
     # This is defensive - better to disable twice than leave proxy orphaned
     logger.info("Emergency cleanup: disabling system proxy...")
     _set_system_proxy(enable=False)
-    _unset_launchctl_env()
-    _delete_proxy_port_file()
     with _state.lock:
         _state.proxy_active = False
     _write_proxy_state()
@@ -1358,7 +910,6 @@ def _apply_sensor_state(enabled: bool, addon_instance=None) -> None:
             # Only try to enable proxy if port is configured (running() will handle it otherwise)
             if _state.proxy_port:
                 _set_system_proxy(enable=True)
-                _set_launchctl_env()
                 _addon_manages_proxy = True  # Track that we enabled proxy (for cleanup)
                 _state.proxy_active = True
                 _write_proxy_state()
@@ -1367,7 +918,6 @@ def _apply_sensor_state(enabled: bool, addon_instance=None) -> None:
             oximy_log(OximyEventCode.STATE_STATE_001, "Sensor disabled", data={"sensor_enabled": False})
             _state.sensor_active = False
             _set_system_proxy(enable=False)
-            _unset_launchctl_env()
             _state.proxy_active = False
             _write_proxy_state()
 
@@ -1423,6 +973,43 @@ def _post_command_results_immediate(command_results: dict) -> None:
     except Exception as e:
         # Silent failure - heartbeat will report results as fallback
         logger.debug(f"Failed to immediately POST command results (will retry via heartbeat): {e}")
+
+
+def _post_suggestion_feedback(suggestion_id: str, action: str) -> None:
+    """Post suggestion feedback (used/dismissed) to API.
+
+    Best-effort — failures are logged but don't affect sensor operation.
+    """
+    try:
+        if not OXIMY_TOKEN_FILE.exists():
+            logger.debug("No device token found - skipping suggestion feedback POST")
+            return
+
+        with open(OXIMY_TOKEN_FILE, encoding="utf-8") as f:
+            device_token = f.read().strip()
+
+        if not device_token:
+            return
+
+        api_endpoint = os.getenv("OXIMY_API_ENDPOINT", _resolved_api_base)
+        url = f"{api_endpoint}/proactive-policy/suggestions/{suggestion_id}/feedback"
+
+        headers = {
+            "Authorization": f"Bearer {device_token}",
+            "Content-Type": "application/json",
+        }
+
+        payload = json.dumps({"action": action})
+
+        req = urllib.request.Request(url, data=payload.encode(), headers=headers, method="POST")
+        with _no_proxy_opener.open(req, timeout=5) as response:
+            if response.status in (200, 202):
+                logger.info(f"[PLAYBOOK] Feedback sent: suggestion={suggestion_id} action={action}")
+            else:
+                logger.debug(f"[PLAYBOOK] Feedback POST returned status {response.status}")
+
+    except Exception as e:
+        logger.debug(f"[PLAYBOOK] Failed to POST suggestion feedback: {e}")
 
 
 def _parse_sensor_config(raw: dict, addon_instance=None) -> dict:
@@ -1632,12 +1219,29 @@ def _parse_sensor_config(raw: dict, addon_instance=None) -> dict:
             elif mode == "warn":
                 addon_instance._warned_domains[domain] = rule
 
+    # --- PROACTIVE SUGGESTION FEEDBACK ---
+    # Check if the Mac app has responded to a suggestion (used/dismissed)
+    # and send feedback to the server before writing any new suggestion
+    try:
+        from playbooks import clear_suggestion
+        from playbooks import read_suggestion_feedback
+        feedback = read_suggestion_feedback()
+        if feedback:
+            feedback_id = feedback.get("id", "")
+            feedback_status = feedback.get("status", "")
+            if feedback_id and feedback_status in ("used", "dismissed"):
+                _post_suggestion_feedback(feedback_id, feedback_status)
+                clear_suggestion()
+    except Exception as e:
+        logger.debug(f"[PLAYBOOK] Feedback check error: {e}")
+
     # --- PROACTIVE SUGGESTION DELIVERY ---
     # Write server-provided suggestion to disk for the Mac app
     pending_suggestion = data.get("pendingSuggestion")
     if pending_suggestion:
         try:
-            from playbooks import write_suggestion_from_server
+            from playbooks import write_suggestion_from_server  # noqa: I001
+
             write_suggestion_from_server(pending_suggestion)
         except Exception as e:
             logger.warning(f"Failed to write proactive suggestion: {e}")
@@ -1670,6 +1274,7 @@ def _parse_sensor_config(raw: dict, addon_instance=None) -> dict:
         "allowed_host_origins": data.get("allowed_host_origins", []),
         "localDataSources": data.get("localDataSources", {}),
         "tenantId": data.get("tenantId"),
+        "enforcementPolicies": data.get("enforcementPolicies"),
     }
 
 
@@ -1816,7 +1421,6 @@ def get_device_id() -> str | None:
 
 # Cache for compiled URL pattern regexes (pattern -> compiled regex)
 # Use OrderedDict for LRU eviction
-from collections import OrderedDict
 _url_pattern_cache: OrderedDict[str, re.Pattern] = OrderedDict()
 _URL_PATTERN_CACHE_MAX_SIZE = 1000
 
@@ -1994,7 +1598,6 @@ def matches_whitelist(host: str, path: str, patterns: list[str]) -> str | None:
     for pattern in patterns:
         # Check if pattern contains a path component
         # Look for / that's not part of *.domain pattern
-        pattern_lower = pattern.lower()
 
         # Find first / that indicates a path
         first_slash = pattern.find('/')
@@ -2370,7 +1973,6 @@ class TLSPassthrough:
         if not self._learned_patterns or not whitelist:
             return
 
-        original_count = len(self._learned_patterns)
         cleaned = []
         removed = []
         for p in self._learned_patterns:
@@ -3136,6 +2738,13 @@ class OximyAddon:
         self._upload_threshold_count: int = DEFAULT_UPLOAD_THRESHOLD_COUNT
         self._port_configured: bool = False  # Guard against configure() recursion when setting listen_port
         self._local_collector: LocalDataCollector | None = None
+        # Enforcement engine for PII detection and blocking
+        self._enforcement: EnforcementEngine = EnforcementEngine()
+        # Pending enforcement violations to report back to API
+        self._pending_violations: list[dict] = []
+        self._violation_report_lock: threading.Lock = threading.Lock()
+        self._violation_report_thread: threading.Thread | None = None
+        self._violation_report_stop: threading.Event = threading.Event()
         # Enforcement rules from sensor-config API (populated by _parse_sensor_config)
         self._enforcement_rules: list = []
         self._blocked_domains: dict = {}
@@ -3213,6 +2822,7 @@ class OximyAddon:
         loader.add_option("oximy_debug_traces", bool, False, "Log all requests to all_traces file (unfiltered)")
         loader.add_option("oximy_debug_ingestion", bool, False, "Write traces to disk AND send via memory buffer (for debugging)")
         loader.add_option("oximy_manage_proxy", bool, True, "Manage system proxy (disable when host app handles this)")
+        loader.add_option("oximy_enforcement", bool, True, "Enable request enforcement (PII blocking)")
 
     def _refresh_config(self, max_retries: int = 3) -> bool:
         """Fetch and apply updated config from API with retries.
@@ -3276,6 +2886,11 @@ class OximyAddon:
                     tenant_id = config.get("tenantId")
                     if tenant_id:
                         set_log_context(device_id=self._device_id, tenant_id=tenant_id)
+
+                    # Update enforcement policies if present in config
+                    enforcement_policies = config.get("enforcementPolicies")
+                    if enforcement_policies is not None:
+                        self._enforcement.update_policies(enforcement_policies)
 
                 logger.debug(
                     f"Config refreshed: {len(self._whitelist)} whitelist, {len(self._blacklist)} blacklist, "
@@ -3501,6 +3116,11 @@ class OximyAddon:
         # Convert parsers to lowercase set for O(1) case-insensitive lookup
         self._apps_with_parsers = {p.lower() for p in app_origins.get("apps_with_parsers", [])}
 
+        # Load enforcement policies from startup config
+        enforcement_policies = sensor_config.get("enforcementPolicies")
+        if enforcement_policies is not None:
+            self._enforcement.update_policies(enforcement_policies)
+
         # Load unknown apps cache for daily rate limiting
         self._no_parser_apps_cache = _load_no_parser_apps_cache()
         # Load unknown domains cache for website catalog discovery
@@ -3515,6 +3135,12 @@ class OximyAddon:
 
         # Start background trigger file monitor
         self._start_force_sync_monitor()
+
+        # Start background violation reporting to API (only if not already running)
+        if self._violation_report_thread is None or not self._violation_report_thread.is_alive():
+            with self._thread_start_lock:
+                if self._violation_report_thread is None or not self._violation_report_thread.is_alive():
+                    self._start_violation_report_task()
 
         # Initialize trace uploader for disk-based fallback files (only if enabled)
         # When running under a host app (e.g., OximyMac), the host handles sync
@@ -3612,8 +3238,6 @@ class OximyAddon:
                 # Sync resolver with actual port
                 if self._resolver:
                     self._resolver.update_proxy_port(int(_state.proxy_port))
-                # Write port file so terminal env script can discover the port
-                _write_proxy_port_file(_state.proxy_port)
                 # Only enable proxy if sensor is active (may be disabled on startup)
                 if _state.sensor_active:
                     logger.info(f"Configuring system proxy with port {_state.proxy_port}")
@@ -3628,10 +3252,6 @@ class OximyAddon:
                     _write_proxy_state()
         else:
             logger.warning("Could not get proxy port - system proxy not configured")
-
-        # Set up terminal env (shell profile injection, env scripts, CA bundle).
-        # Runs outside the lock — idempotent and non-fatal.
-        _setup_terminal_env()
 
     def _delayed_proxy_activation(self):
         """Fallback activation if running() hook isn't called.
@@ -3676,7 +3296,6 @@ class OximyAddon:
                 # Sync resolver with actual port
                 if self._resolver:
                     self._resolver.update_proxy_port(port)
-                _write_proxy_port_file(_state.proxy_port)
 
                 # Only enable proxy if sensor is active
                 if _state.sensor_active:
@@ -3691,9 +3310,6 @@ class OximyAddon:
                     _addon_manages_proxy = False
                     _state.proxy_active = False
                     _write_proxy_state()
-
-            # Set up terminal env
-            _setup_terminal_env()
 
         except Exception as e:
             logger.error(f"[OXIMY] Fallback activation failed: {e}", exc_info=True)
@@ -4241,6 +3857,279 @@ class OximyAddon:
             "app_type": app_type or "unknown",
         })
 
+        # =====================================================================
+        # STEP 7: Enforcement — PII detection and blocking
+        # Only runs on captured requests (passed all filters above)
+        # =====================================================================
+        try:
+            enforcement_enabled = ctx.options.oximy_enforcement
+        except AttributeError:
+            enforcement_enabled = False
+        if enforcement_enabled:
+            self._enforce_request(flow)
+
+    # Path segments that indicate analytics/telemetry (skip enforcement)
+    _ANALYTICS_PATH_KEYWORDS = frozenset({
+        "analytics", "telemetry", "tracking", "events", "metrics",
+        "diagnostics", "heartbeat", "ping", "health", "autosuggest",
+    })
+
+    def _enforce_request(self, flow: http.HTTPFlow) -> None:
+        """Check request body for PII and redact it in-flight.
+
+        Runs after STEP 6 (capture marking). Only checks text-based content types.
+        PII is replaced with [REDACTED] placeholders in the request body before
+        it reaches the AI provider. The request always goes through — never 403.
+
+        Safety guarantees:
+          - Fail-open: any exception → request goes through unchanged.
+          - JSON-safe: if the original body was valid JSON and redaction breaks it,
+            we revert to the original body (fail-open).
+          - Only processes text content types (json, text/*, x-www-form-urlencoded).
+          - Skips analytics/telemetry paths to avoid false positives.
+          - Skips bodies > 1MB.
+        """
+        try:
+            content_type = flow.request.headers.get("content-type", "")
+            if not any(ct in content_type for ct in ("json", "text/", "x-www-form-urlencoded")):
+                return
+
+            body = flow.request.get_text(strict=False)
+            if not body or len(body) > 1_000_000:
+                return
+
+            # Skip analytics/telemetry endpoints (high false-positive rate)
+            path_lower = flow.request.path.lower()
+            if any(kw in path_lower for kw in self._ANALYTICS_PATH_KEYWORDS):
+                return
+
+            host = flow.request.pretty_host
+            path = flow.request.path
+            method = flow.request.method
+            bundle_id = flow.metadata.get("oximy_bundle_id", "")
+
+            # First, check if any policy matches (returns real policy/rule context)
+            action, violation = self._enforcement.check_request(
+                body, host, path, method, bundle_id
+            )
+
+            if violation is None:
+                return  # Clean — no PII found
+
+            if action == "allow" and violation is not None:
+                # Monitor mode — log violation but don't redact
+                self._write_violation_file(violation)
+                self._write_enforcement_audit(violation, flow)
+                self._queue_violation_for_api(violation, [violation.detected_type])
+                return
+
+            # PII found with warn/block mode — redact the body
+            redacted_body, detected_types = self._enforcement.redact_pii(body)
+
+            if not detected_types:
+                return  # redact_pii found nothing (edge case — fail-open)
+
+            # SAFETY: Verify JSON integrity after redaction.
+            # If the original was valid JSON and redaction broke it, revert.
+            is_json = "json" in content_type
+            if is_json:
+                try:
+                    json.loads(redacted_body)
+                except (json.JSONDecodeError, ValueError):
+                    logger.warning(
+                        "[ENFORCEMENT] Redaction broke JSON structure — "
+                        "reverting to original body (fail-open)"
+                    )
+                    return  # Don't modify — fail-open
+
+            # Replace the request body with the redacted version
+            flow.request.set_text(redacted_body)
+
+            logger.warning(
+                "[ENFORCEMENT] REDACTED %s in %s %s%s",
+                detected_types, method, host, path[:60],
+            )
+
+            # Update violation action to reflect actual redaction
+            violation.action = "redacted"
+            violation.detected_type = ", ".join(detected_types)
+            violation.message = (
+                f"Redacted {', '.join(detected_types)} from "
+                f"{method} {host}{path[:60]}"
+            )
+
+            # Mark the flow so the trace payload includes enforced=True
+            flow.metadata["oximy_enforced"] = True
+
+            self._write_violation_file(violation)
+            self._write_enforcement_audit(violation, flow)
+            self._queue_violation_for_api(violation, detected_types)
+
+        except Exception:
+            logger.debug("Enforcement check failed (fail-open)", exc_info=True)
+
+    def _write_violation_file(self, violation: Violation) -> None:
+        """Write violation to ~/.oximy/violations.json for desktop app notifications."""
+        try:
+            existing_violations = []
+            if OXIMY_VIOLATIONS_FILE.exists():
+                try:
+                    with open(OXIMY_VIOLATIONS_FILE, encoding="utf-8") as f:
+                        data = json.load(f)
+                        existing_violations = data.get("violations", [])
+                except (json.JSONDecodeError, IOError):
+                    existing_violations = []
+
+            violation_entry = {
+                "id": violation.id,
+                "timestamp": violation.timestamp,
+                "action": violation.action,
+                "policy_name": violation.policy_name,
+                "rule_name": violation.rule_name,
+                "severity": violation.severity,
+                "detected_type": violation.detected_type,
+                "host": violation.host,
+                "bundle_id": violation.bundle_id,
+                "retry_allowed": violation.retry_allowed,
+                "message": violation.message,
+            }
+            existing_violations.append(violation_entry)
+            existing_violations = existing_violations[-10:]
+
+            violations_data = {
+                "violations": existing_violations,
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }
+
+            _atomic_write(OXIMY_VIOLATIONS_FILE, json.dumps(violations_data, indent=2))
+
+        except Exception:
+            logger.debug("Failed to write violation file", exc_info=True)
+
+    def _write_enforcement_audit(self, violation: Violation, flow: http.HTTPFlow) -> None:
+        """Queue an enforcement audit event through the existing trace buffer."""
+        try:
+            import uuid as _uuid
+            audit_event = {
+                "event_id": str(_uuid.uuid4()),
+                "timestamp": violation.timestamp,
+                "type": "enforcement",
+                "device_id": self._device_id,
+                "enforcement": {
+                    "action": violation.action,
+                    "policy_id": violation.policy_id,
+                    "policy_name": violation.policy_name,
+                    "rule_id": violation.rule_id,
+                    "rule_name": violation.rule_name,
+                    "severity": violation.severity,
+                    "detected_type": violation.detected_type,
+                    "retry_allowed": violation.retry_allowed,
+                    "detection_method": violation.detection_method,
+                    "confidence_score": violation.confidence_score,
+                },
+                "request": {
+                    "method": flow.request.method,
+                    "host": flow.request.pretty_host,
+                    "path": flow.request.path[:200],
+                },
+            }
+            self._write_to_buffer(audit_event)
+        except Exception:
+            logger.debug("Failed to write enforcement audit event", exc_info=True)
+
+    def _queue_violation_for_api(self, violation: Violation, detected_types: list[str]) -> None:
+        """Queue a violation for batch reporting to the API."""
+        try:
+            entry = {
+                "id": violation.id,
+                "timestamp": violation.timestamp,
+                "action": violation.action,
+                "policy_id": violation.policy_id,
+                "policy_name": violation.policy_name,
+                "rule_id": violation.rule_id,
+                "rule_name": violation.rule_name,
+                "rule_type": violation.rule_type,
+                "severity": violation.severity,
+                "detected_types": detected_types,
+                "host": violation.host,
+                "path": violation.path[:200],
+                "method": violation.method,
+                "bundle_id": violation.bundle_id,
+                "detection_method": violation.detection_method,
+                "confidence_score": violation.confidence_score,
+            }
+            with self._violation_report_lock:
+                self._pending_violations.append(entry)
+        except Exception:
+            logger.debug("Failed to queue violation for API", exc_info=True)
+
+    def _flush_violations_to_api(self) -> None:
+        """Send pending violations to the API ingestion endpoint."""
+        with self._violation_report_lock:
+            if not self._pending_violations:
+                return
+            batch = self._pending_violations[:]
+            self._pending_violations.clear()
+
+        if not batch:
+            return
+
+        token = _get_device_token()
+        if not token:
+            return
+
+        try:
+            url = f"{_resolved_api_base}/api/v1/ingest/enforcement-violations"
+            payload = json.dumps({"violations": batch}).encode("utf-8")
+
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                method="POST",
+            )
+            with _no_proxy_opener.open(req, timeout=10) as resp:
+                if resp.status in (200, 202):
+                    logger.info(f"Reported {len(batch)} enforcement violations to API")
+                else:
+                    logger.warning(f"Violation report got status {resp.status}")
+        except Exception:
+            logger.debug(f"Failed to report {len(batch)} violations to API (will retry)", exc_info=True)
+            # Re-queue on failure (don't lose violations)
+            with self._violation_report_lock:
+                self._pending_violations = batch + self._pending_violations
+                # Cap at 200 to avoid unbounded growth
+                self._pending_violations = self._pending_violations[:200]
+
+    def _start_violation_report_task(self) -> None:
+        """Start background thread to periodically flush violations to API."""
+        self._violation_report_stop.clear()
+
+        def report_loop():
+            while not self._violation_report_stop.is_set():
+                if self._violation_report_stop.wait(timeout=10):
+                    break
+                self._flush_violations_to_api()
+
+        self._violation_report_thread = threading.Thread(
+            target=report_loop,
+            daemon=True,
+            name="oximy-violation-report",
+        )
+        self._violation_report_thread.start()
+        logger.info("Violation report task started (interval: 10s)")
+
+    def _stop_violation_report_task(self) -> None:
+        """Stop the violation reporting thread and flush remaining."""
+        self._violation_report_stop.set()
+        if self._violation_report_thread:
+            self._violation_report_thread.join(timeout=5)
+        # Final flush
+        self._flush_violations_to_api()
+
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         """Enable streaming for SSE responses to prevent client timeouts.
 
@@ -4675,6 +4564,10 @@ class OximyAddon:
         }
         event["timing"] = {"duration_ms": duration_ms, "ttfb_ms": ttfb_ms}
 
+        # Mark traces where PII was redacted so the server skips data_type rules
+        if flow.metadata.get("oximy_enforced"):
+            event["enforced"] = True
+
         return event
 
     # =========================================================================
@@ -5082,18 +4975,17 @@ class OximyAddon:
         if self._force_sync_thread and self._force_sync_thread.is_alive():
             self._force_sync_thread.join(timeout=1)
 
+        # Stop violation reporting thread (flushes remaining violations)
+        self._stop_violation_report_task()
+
         # Stop local data collector
         if self._local_collector:
             self._local_collector.stop()
             self._local_collector = None
 
-        # Remove terminal env injections (shell profiles, env scripts, CA bundle)
-        _teardown_terminal_env()
-
         # ALWAYS disable system proxy on Windows to prevent orphaned proxy
         # On macOS, only disable if we enabled it (host app may manage proxy)
         with _state.lock:
-            _delete_proxy_port_file()
             if sys.platform == "win32":
                 _set_system_proxy(enable=False)
                 _state.proxy_active = False
