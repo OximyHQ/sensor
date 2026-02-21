@@ -15,7 +15,9 @@ final class ViolationPanelController {
     private init() {}
 
     func show(violation: ViolationEntry) {
-        dismiss()
+        // Don't re-show if already visible — prevents the auto-dismiss timer
+        // from resetting endlessly as new violations arrive every polling cycle.
+        if panel != nil { return }
 
         let panelContent = ViolationPanelView(
             violation: violation,
