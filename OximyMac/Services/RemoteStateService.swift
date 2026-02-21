@@ -77,7 +77,14 @@ final class RemoteStateService: ObservableObject {
     @Published var isRunning = false
     @Published var appConfig: AppConfigFlags?
     @Published var enforcementRules: [EnforcementRule] = []
-    private var previousUninstallCertificate: Bool?
+    /// Tracks the last uninstallCertificate value read from the FILE only.
+    /// Heartbeat updates do NOT modify this — preventing stale file data from
+    /// generating spurious change notifications after a heartbeat override.
+    private var lastFileUninstallCert: Bool?
+    /// Tracks the file's timestamp to detect stale re-reads.
+    /// When the file hasn't changed, we skip overwriting appConfig
+    /// so heartbeat-delivered values aren't clobbered by stale data.
+    private var lastFileTimestamp: String?
 
     // MARK: - Private
 
@@ -132,14 +139,22 @@ final class RemoteStateService: ObservableObject {
             let decoder = JSONDecoder()
             let state = try decoder.decode(RemoteState.self, from: data)
 
+            let isNewFileData = state.timestamp != lastFileTimestamp
+            lastFileTimestamp = state.timestamp
+
             let previousEnabled = sensorEnabled
 
             sensorEnabled = state.sensorEnabled
             proxyActive = state.proxyActive
             tenantId = state.tenantId
             itSupport = state.itSupport
-            appConfig = state.appConfig
             lastUpdate = Date()
+
+            // Only update appConfig from file when the file has new data.
+            // This prevents stale file reads from overwriting heartbeat-delivered values.
+            if isNewFileData {
+                appConfig = state.appConfig
+            }
 
             // Update enforcement rules and notify if changed
             let newRules = state.enforcementRules ?? []
@@ -151,15 +166,18 @@ final class RemoteStateService: ObservableObject {
                 )
             }
 
-            // Detect uninstallCertificate transition
-            let newUninstallCert = state.appConfig?.uninstallCertificate ?? false
-            if previousUninstallCertificate != nil && newUninstallCert != previousUninstallCertificate {
-                NotificationCenter.default.post(
-                    name: .uninstallCertificateChanged,
-                    object: newUninstallCert
-                )
+            // Detect uninstallCertificate transition in FILE data only.
+            // Only process when file has new data — stale reads skip entirely.
+            if isNewFileData {
+                let newUninstallCert = state.appConfig?.uninstallCertificate ?? false
+                if lastFileUninstallCert != nil && newUninstallCert != lastFileUninstallCert {
+                    NotificationCenter.default.post(
+                        name: .uninstallCertificateChanged,
+                        object: newUninstallCert
+                    )
+                }
+                lastFileUninstallCert = newUninstallCert
             }
-            previousUninstallCertificate = newUninstallCert
 
             // Handle state changes
             if previousEnabled != state.sensorEnabled {
@@ -195,14 +213,17 @@ final class RemoteStateService: ObservableObject {
     func updateAppConfig(_ config: AppConfigFlags) {
         appConfig = config
 
+        // Fire notification if heartbeat value differs from last file value.
+        // Do NOT update lastFileUninstallCert — only readState() writes that,
+        // so stale file reads always compare against themselves.
         let newUninstallCert = config.uninstallCertificate ?? false
-        if previousUninstallCertificate != nil && newUninstallCert != previousUninstallCertificate {
+        let currentFileValue = lastFileUninstallCert ?? false
+        if newUninstallCert != currentFileValue {
             NotificationCenter.default.post(
                 name: .uninstallCertificateChanged,
                 object: newUninstallCert
             )
         }
-        previousUninstallCertificate = newUninstallCert
     }
 
     private func handleForceLogout() {

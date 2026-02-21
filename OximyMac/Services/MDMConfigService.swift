@@ -46,6 +46,7 @@ final class MDMConfigService: ObservableObject {
         case forceAutoStart = "ForceAutoStart"
         case disableUserLogout = "DisableUserLogout"
         case disableQuit = "DisableQuit"
+        case uninstallCertificate = "UninstallCertificate"
 
         // Configuration
         case apiEndpoint = "APIEndpoint"
@@ -260,6 +261,14 @@ final class MDMConfigService: ObservableObject {
         return false
     }
 
+    /// Remove CA certificate from device (remote command)
+    /// Priority: MDM > remote-state (API) > default
+    var uninstallCertificate: Bool {
+        if let mdmValue = getManagedBool(for: .uninstallCertificate) { return mdmValue }
+        if let apiValue = RemoteStateService.shared.appConfig?.uninstallCertificate { return apiValue }
+        return false
+    }
+
     // MARK: - Configuration Accessors (with 3-tier fallback)
 
     /// Custom API endpoint from MDM
@@ -307,6 +316,7 @@ final class MDMConfigService: ObservableObject {
         print("  - Force Auto-Start: \(forceAutoStart)")
         print("  - Disable Logout: \(disableUserLogout)")
         print("  - Disable Quit: \(disableQuit)")
+        print("  - Uninstall Certificate: \(uninstallCertificate)")
         print("  - API Endpoint: \(managedAPIEndpoint ?? "default")")
     }
 }

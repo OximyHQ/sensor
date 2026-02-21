@@ -58,6 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var remoteStateObserver: NSObjectProtocol?
+    private var uninstallCertObserver: NSObjectProtocol?
+    private var isCertReconciling = false
+    private var lastCertOperationSucceeded = true
     private var mainMenuQuitItem: NSMenuItem?
     private var isShowingQuitBlockedAlert = false
     private var violationObserver: NSObjectProtocol?
@@ -236,6 +239,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Observe remote uninstallCertificate flag changes
+        uninstallCertObserver = NotificationCenter.default.addObserver(
+            forName: .uninstallCertificateChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let shouldUninstall = notification.object as? Bool ?? false
+                self.handleUninstallCertificateChanged(shouldUninstall)
+            }
+        }
+
         // Start network monitoring
         NetworkMonitor.shared.startMonitoring()
 
@@ -397,6 +413,126 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showPopover()
     }
 
+    // MARK: - Remote Certificate Management
+
+    private func handleUninstallCertificateChanged(_ shouldUninstall: Bool) {
+        // Skip if MDM manages the certificate — admin controls it via MDM profile instead
+        if MDMConfigService.shared.managedCACertInstalled {
+            OximyLogger.shared.log(.CERT_FAIL_306, "Remote cert command skipped — MDM manages certificate")
+            return
+        }
+
+        // Reconcile: compare desired action vs actual device status.
+        // This makes the handler idempotent — safe to call multiple times.
+        let isCurrentlyInstalled = CertificateService.shared.isCAInstalled
+
+        if shouldUninstall && !isCurrentlyInstalled {
+            print("[OximyApp] Certificate already uninstalled, skipping")
+            return
+        }
+
+        if !shouldUninstall && isCurrentlyInstalled {
+            print("[OximyApp] Certificate already installed, skipping")
+            return
+        }
+
+        // Prevent concurrent operations
+        guard !isCertReconciling else {
+            print("[OximyApp] Certificate operation already in progress, skipping")
+            return
+        }
+        isCertReconciling = true
+
+        if shouldUninstall {
+            OximyLogger.shared.log(.CERT_CMD_106, "Remote uninstall certificate command received")
+
+            Task {
+                do {
+                    // 1. Stop mitmproxy
+                    MITMService.shared.stop()
+
+                    // 2. Disable proxy
+                    try await ProxyService.shared.disableProxy()
+                    appState.isProxyEnabled = false
+
+                    // 3. Remove cert from Keychain
+                    try await CertificateService.shared.removeCA()
+
+                    // 4. Delete cert files from disk
+                    try CertificateService.shared.deleteCAFiles()
+
+                    appState.isCertificateInstalled = false
+                    lastCertOperationSucceeded = true
+                    print("[OximyApp] Certificate uninstalled via remote command")
+                } catch {
+                    lastCertOperationSucceeded = false
+                    OximyLogger.shared.log(.CERT_FAIL_304, "Remote certificate uninstall failed", data: [
+                        "error": error.localizedDescription
+                    ])
+                }
+                certOperationCompleted()
+            }
+        } else {
+            OximyLogger.shared.log(.CERT_CMD_107, "Remote reinstall certificate command received")
+
+            Task {
+                do {
+                    // 1. Generate new CA
+                    try await CertificateService.shared.generateCA()
+
+                    // 2. Install to Keychain (will prompt user for password)
+                    try await CertificateService.shared.installCA()
+
+                    appState.isCertificateInstalled = true
+
+                    // 3. Restart mitmproxy and proxy
+                    MITMService.shared.resetRestartCounter()
+                    try await MITMService.shared.start()
+
+                    if let port = MITMService.shared.currentPort {
+                        try await ProxyService.shared.enableProxy(port: port)
+                        appState.isProxyEnabled = true
+                    }
+
+                    lastCertOperationSucceeded = true
+                    print("[OximyApp] Certificate reinstalled via remote command")
+                } catch {
+                    lastCertOperationSucceeded = false
+                    OximyLogger.shared.log(.CERT_FAIL_305, "Remote certificate reinstall failed", data: [
+                        "error": error.localizedDescription
+                    ])
+                }
+                certOperationCompleted()
+            }
+        }
+    }
+
+    /// Called after a cert operation finishes. Re-checks the latest desired state
+    /// against actual state to catch commands that arrived during the operation.
+    /// Only re-triggers after successful operations to avoid infinite retry loops
+    /// (e.g., user repeatedly cancelling the password prompt).
+    private func certOperationCompleted() {
+        isCertReconciling = false
+
+        // Don't re-trigger if the last operation failed — wait for next notification
+        guard lastCertOperationSucceeded else { return }
+
+        // Read the latest desired state from appConfig
+        let latestDesired = MDMConfigService.shared.uninstallCertificate
+        let actualState = CertificateService.shared.isCAInstalled
+
+        // If desired state doesn't match actual, re-trigger reconciliation
+        if latestDesired && actualState {
+            // API says uninstall, but cert is still installed
+            print("[OximyApp] Post-operation reconciliation: uninstall needed")
+            handleUninstallCertificateChanged(true)
+        } else if !latestDesired && !actualState {
+            // API says install, but cert is not installed
+            print("[OximyApp] Post-operation reconciliation: install needed")
+            handleUninstallCertificateChanged(false)
+        }
+    }
+
     // MARK: - URL Handling (for oximy:// deep links)
 
     @objc private func handleAuthURLNotification(_ notification: Notification) {
@@ -501,7 +637,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 print("[OximyApp] Falling back to minimal login (device_id from URL: \(deviceId ?? "nil"))")
 
                 appState.login(
-                    workspaceName: "Loading...",
+                    workspaceName: "",
                     deviceToken: token,
                     deviceId: deviceId,
                     workspaceId: nil
@@ -616,6 +752,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let observer = remoteStateObserver {
             NotificationCenter.default.removeObserver(observer)
             remoteStateObserver = nil
+        }
+
+        // Remove uninstall certificate observer
+        if let observer = uninstallCertObserver {
+            NotificationCenter.default.removeObserver(observer)
+            uninstallCertObserver = nil
         }
 
         // Remove global event monitor
@@ -778,6 +920,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if appState.phase == .setup { return }
             popover.performClose(nil)
         } else {
+            appState.selectedTab = .home
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             makePopoverOpaque()
 
