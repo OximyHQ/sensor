@@ -121,6 +121,7 @@ struct HeartbeatResponse: Decodable {
         let commands: [String]?
         let workspaceName: String?
         let workspaceId: String?  // For validating workspace name updates
+        let appConfig: AppConfigFlags?
     }
 }
 

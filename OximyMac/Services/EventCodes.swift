@@ -62,6 +62,11 @@ enum EventCode: String {
     case CERT_WARN_201 = "CERT.WARN.201"
     case CERT_FAIL_301 = "CERT.FAIL.301"
     case CERT_FAIL_303 = "CERT.FAIL.303"
+    case CERT_CMD_106 = "CERT.CMD.106"     // Remote uninstall command received
+    case CERT_CMD_107 = "CERT.CMD.107"     // Remote reinstall command received
+    case CERT_FAIL_304 = "CERT.FAIL.304"   // Remote uninstall failed
+    case CERT_FAIL_305 = "CERT.FAIL.305"   // Remote reinstall failed
+    case CERT_FAIL_306 = "CERT.FAIL.306"   // Remote cert command skipped (MDM-managed)
 
     // Proxy
     case PROXY_START_001 = "PROXY.START.001"
@@ -121,7 +126,7 @@ enum EventCode: String {
         case .APP_FAIL_301,
              .AUTH_FAIL_301,
              .ENROLL_FAIL_301,
-             .CERT_FAIL_301, .CERT_FAIL_303,
+             .CERT_FAIL_301, .CERT_FAIL_303, .CERT_FAIL_304, .CERT_FAIL_305,
              .PROXY_FAIL_301,
              .MITM_FAIL_301, .MITM_FAIL_304, .MITM_FAIL_306,
              .NET_FAIL_301,
@@ -130,7 +135,7 @@ enum EventCode: String {
             return .error
         case .AUTH_AUTH_004,
              .AUTH_FAIL_201, .AUTH_FAIL_302, .AUTH_FAIL_303,
-             .CERT_WARN_201,
+             .CERT_WARN_201, .CERT_FAIL_306,
              .PROXY_CLEAN_001,
              .MITM_RETRY_001,
              .HB_FAIL_201, .HB_FAIL_202, .HB_FAIL_203, .HB_STATE_202,
@@ -150,10 +155,11 @@ enum EventCode: String {
         case .MITM_RETRY_401:
             return .alertOps
         case .AUTH_AUTH_004, .AUTH_FAIL_301, .CERT_FAIL_303, .ENROLL_FAIL_301, .STATE_CMD_003,
-             .BLOCK_REQ_001:
+             .BLOCK_REQ_001,
+             .CERT_CMD_106, .CERT_CMD_107:
             return .userAction
         case .APP_FAIL_301, .AUTH_FAIL_302, .AUTH_FAIL_303,
-             .CERT_FAIL_301, .PROXY_FAIL_301,
+             .CERT_FAIL_301, .CERT_FAIL_304, .CERT_FAIL_305, .PROXY_FAIL_301,
              .MITM_FAIL_301,
              .HB_FAIL_202, .HB_STATE_202,
              .LAUNCH_FAIL_301,

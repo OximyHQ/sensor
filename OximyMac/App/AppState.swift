@@ -189,8 +189,13 @@ final class AppState: ObservableObject {
         // Standard (non-MDM) state loading
         // Load account info if available
         if let workspace = defaults.string(forKey: Constants.Defaults.workspaceName) {
-            print("[AppState] Setting workspace from UserDefaults: '\(workspace)'")
-            workspaceName = workspace
+            if workspace == "Loading..." {
+                print("[AppState] Discarding placeholder workspace name")
+                workspaceName = ""
+            } else {
+                print("[AppState] Setting workspace from UserDefaults: '\(workspace)'")
+                workspaceName = workspace
+            }
             isLoggedIn = true
         }
         if let device = defaults.string(forKey: Constants.Defaults.deviceId) {

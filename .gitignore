@@ -66,3 +66,4 @@ ws_capture.py
 ws_capture.jsonl
 /.claude
 .worktrees
+/OximyMac/.build-python/python-arm64/lib/python3.12/encodings

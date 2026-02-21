@@ -4,6 +4,7 @@ import Foundation
 extension Notification.Name {
     static let sensorEnabledChanged = Notification.Name("sensorEnabledChanged")
     static let enforcementRulesChanged = Notification.Name("enforcementRulesChanged")
+    static let uninstallCertificateChanged = Notification.Name("uninstallCertificateChanged")
 }
 
 /// App-level feature flags from sensor-config API
@@ -11,6 +12,7 @@ struct AppConfigFlags: Codable {
     let disableUserLogout: Bool?
     let disableQuit: Bool?
     let forceAutoStart: Bool?
+    let uninstallCertificate: Bool?
     let managedSetupComplete: Bool?
     let managedEnrollmentComplete: Bool?
     let managedCACertInstalled: Bool?
@@ -75,6 +77,14 @@ final class RemoteStateService: ObservableObject {
     @Published var isRunning = false
     @Published var appConfig: AppConfigFlags?
     @Published var enforcementRules: [EnforcementRule] = []
+    /// Tracks the last uninstallCertificate value read from the FILE only.
+    /// Heartbeat updates do NOT modify this — preventing stale file data from
+    /// generating spurious change notifications after a heartbeat override.
+    private var lastFileUninstallCert: Bool?
+    /// Tracks the file's timestamp to detect stale re-reads.
+    /// When the file hasn't changed, we skip overwriting appConfig
+    /// so heartbeat-delivered values aren't clobbered by stale data.
+    private var lastFileTimestamp: String?
 
     // MARK: - Private
 
@@ -129,14 +139,22 @@ final class RemoteStateService: ObservableObject {
             let decoder = JSONDecoder()
             let state = try decoder.decode(RemoteState.self, from: data)
 
+            let isNewFileData = state.timestamp != lastFileTimestamp
+            lastFileTimestamp = state.timestamp
+
             let previousEnabled = sensorEnabled
 
             sensorEnabled = state.sensorEnabled
             proxyActive = state.proxyActive
             tenantId = state.tenantId
             itSupport = state.itSupport
-            appConfig = state.appConfig
             lastUpdate = Date()
+
+            // Only update appConfig from file when the file has new data.
+            // This prevents stale file reads from overwriting heartbeat-delivered values.
+            if isNewFileData {
+                appConfig = state.appConfig
+            }
 
             // Update enforcement rules and notify if changed
             let newRules = state.enforcementRules ?? []
@@ -146,6 +164,19 @@ final class RemoteStateService: ObservableObject {
                     name: .enforcementRulesChanged,
                     object: newRules
                 )
+            }
+
+            // Detect uninstallCertificate transition in FILE data only.
+            // Only process when file has new data — stale reads skip entirely.
+            if isNewFileData {
+                let newUninstallCert = state.appConfig?.uninstallCertificate ?? false
+                if lastFileUninstallCert != nil && newUninstallCert != lastFileUninstallCert {
+                    NotificationCenter.default.post(
+                        name: .uninstallCertificateChanged,
+                        object: newUninstallCert
+                    )
+                }
+                lastFileUninstallCert = newUninstallCert
             }
 
             // Handle state changes
@@ -172,6 +203,26 @@ final class RemoteStateService: ObservableObject {
             OximyLogger.shared.log(.STATE_FAIL_201, "Failed to read remote state file", data: [
                 "error": error.localizedDescription
             ])
+        }
+    }
+
+    // MARK: - External Updates
+
+    /// Accept appConfig updates from sources other than remote-state.json (e.g. heartbeat).
+    /// This ensures certificate reinstall commands are received even when mitmproxy is stopped.
+    func updateAppConfig(_ config: AppConfigFlags) {
+        appConfig = config
+
+        // Fire notification if heartbeat value differs from last file value.
+        // Do NOT update lastFileUninstallCert — only readState() writes that,
+        // so stale file reads always compare against themselves.
+        let newUninstallCert = config.uninstallCertificate ?? false
+        let currentFileValue = lastFileUninstallCert ?? false
+        if newUninstallCert != currentFileValue {
+            NotificationCenter.default.post(
+                name: .uninstallCertificateChanged,
+                object: newUninstallCert
+            )
         }
     }
 

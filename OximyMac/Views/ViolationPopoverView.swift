@@ -15,7 +15,9 @@ final class ViolationPanelController {
     private init() {}
 
     func show(violation: ViolationEntry) {
-        dismiss()
+        // Don't re-show if already visible — prevents the auto-dismiss timer
+        // from resetting endlessly as new violations arrive every polling cycle.
+        if panel != nil { return }
 
         let panelContent = ViolationPanelView(
             violation: violation,
@@ -24,11 +26,16 @@ final class ViolationPanelController {
             }
         )
 
+        let typeCount = max(violation.detectedTypes.count, 1)
+        let baseHeight: CGFloat = 140
+        let perTypeHeight: CGFloat = 24
+        let height = baseHeight + CGFloat(typeCount - 1) * perTypeHeight
+
         let hostingView = FirstClickHostingView(rootView: AnyView(panelContent))
-        hostingView.frame = NSRect(x: 0, y: 0, width: 300, height: 160)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 300, height: height)
 
         let panel = InteractivePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 300, height: 160),
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: height),
             styleMask: [.borderless, .nonactivatingPanel, .utilityWindow],
             backing: .buffered,
             defer: false
@@ -48,7 +55,7 @@ final class ViolationPanelController {
         if let screen = NSScreen.main {
             let screenFrame = screen.visibleFrame
             let x = screenFrame.maxX - 300 - 16
-            let y = screenFrame.maxY - 160 - 16
+            let y = screenFrame.maxY - height - 16
             panel.setFrameOrigin(NSPoint(x: x, y: y))
         }
 
@@ -114,6 +121,16 @@ struct ViolationPanelView: View {
                 Text("Data Redacted")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.secondary)
+
+                Text(violation.host)
+                    .font(.system(size: 10, weight: .medium))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.blue.opacity(0.15))
+                    .foregroundColor(.blue)
+                    .cornerRadius(4)
+                    .lineLimit(1)
+
                 Spacer()
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
@@ -130,33 +147,23 @@ struct ViolationPanelView: View {
                 }
             }
 
-            // What was detected + where
-            HStack(spacing: 8) {
-                Image(systemName: violation.piiIcon)
-                    .foregroundColor(.orange)
-                    .font(.system(size: 14))
-
-                Text(violation.piiLabel)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-
-                Spacer()
-
-                Text(violation.host)
-                    .font(.system(size: 10, weight: .medium))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.blue.opacity(0.15))
-                    .foregroundColor(.blue)
-                    .cornerRadius(4)
-                    .lineLimit(1)
+            // What was detected — one row per type
+            ForEach(violation.detectedTypes, id: \.self) { type in
+                HStack(spacing: 8) {
+                    Image(systemName: ViolationEntry.iconForType(type))
+                        .foregroundColor(.orange)
+                        .font(.system(size: 14))
+                    Text(ViolationEntry.labelForType(type))
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                }
             }
 
             // Description
             Text("Replaced with \(violation.redactPlaceholder) before reaching the AI provider.")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
-                .lineLimit(2)
+                .lineLimit(3)
 
             // Footer
             HStack(spacing: 4) {

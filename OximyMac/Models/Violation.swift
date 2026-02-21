@@ -39,16 +39,26 @@ extension ViolationEntry {
         "person_name", "location",
     ]
 
-    /// True when detectedType is a custom regex/keyword rule name rather than a known Oximy key.
-    var isCustomRule: Bool {
-        let types = detectedType
-            .components(separatedBy: ",")
+    /// Individual type strings parsed from the comma-separated `detectedType`.
+    var detectedTypes: [String] {
+        detectedType.components(separatedBy: ",")
             .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-        return !types.allSatisfy { Self.knownOximyTypes.contains($0) }
+            .filter { !$0.isEmpty }
     }
 
-    var piiIcon: String {
-        let t = detectedType.lowercased()
+    /// True when detectedType is a custom regex/keyword rule name rather than a known Oximy key.
+    var isCustomRule: Bool {
+        !detectedTypes.allSatisfy { Self.knownOximyTypes.contains($0) }
+    }
+
+    /// Icon for the first detected type (legacy convenience).
+    var piiIcon: String { Self.iconForType(detectedTypes.first ?? "") }
+
+    /// Label for the first detected type (legacy convenience).
+    var piiLabel: String { Self.labelForType(detectedTypes.first ?? "") }
+
+    static func iconForType(_ type: String) -> String {
+        let t = type.lowercased()
         if t.contains("email")                          { return "envelope.fill" }
         if t.contains("credit") || t.contains("card")  { return "creditcard.fill" }
         if t.contains("ssn")                            { return "person.text.rectangle.fill" }
@@ -60,11 +70,11 @@ extension ViolationEntry {
         if t.contains("person") || t.contains("name")  { return "person.fill" }
         if t.contains("location")                       { return "location.fill" }
         if t.contains("key") || t.contains("token")    { return "key.fill" }
-        return "text.magnifyingglass"  // custom regex/keyword rule
+        return "text.magnifyingglass"
     }
 
-    var piiLabel: String {
-        let t = detectedType.lowercased()
+    static func labelForType(_ type: String) -> String {
+        let t = type.lowercased()
         if t.contains("email")                              { return "Email Address" }
         if t.contains("credit") || t.contains("card")      { return "Credit Card" }
         if t.contains("ssn")                               { return "Social Security Number" }
@@ -77,24 +87,17 @@ extension ViolationEntry {
         if t.contains("person")                            { return "Person Name" }
         if t.contains("location")                          { return "Location" }
         if t.contains("token") || t.contains("key")        { return "API Key" }
-        // Custom rule — the detectedType is the rule name, already human-readable
-        return (detectedType.components(separatedBy: ",").first ?? detectedType)
-            .trimmingCharacters(in: .whitespaces)
-            .replacingOccurrences(of: "_", with: " ")
-            .capitalized
+        return type.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
-    /// The redaction placeholder the Python addon actually wrote into the body.
-    /// Single known type → [TYPE_REDACTED]. Custom/mixed → [CUSTOM_REDACTED].
+    /// The redaction placeholders the Python addon actually wrote into the body.
     var redactPlaceholder: String {
-        let types = detectedType.components(separatedBy: ",").map {
-            $0.trimmingCharacters(in: .whitespaces).lowercased()
-        }
-        if types.count == 1, let single = types.first,
-           Self.knownOximyTypes.contains(single) {
-            return "[\(single.uppercased())_REDACTED]"
-        }
-        return "[CUSTOM_REDACTED]"
+        detectedTypes.map { type in
+            if Self.knownOximyTypes.contains(type) {
+                return "[\(type.uppercased())_REDACTED]"
+            }
+            return "[CUSTOM_REDACTED]"
+        }.joined(separator: ", ")
     }
 
     /// Relative time string for the violation timestamp (e.g. "2 min ago").

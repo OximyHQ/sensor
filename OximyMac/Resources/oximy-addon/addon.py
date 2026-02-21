@@ -9,6 +9,7 @@ Pipeline: Passthrough → Whitelist → Blacklist → Capture to JSONL
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import fnmatch
 import gzip
@@ -756,6 +757,7 @@ def fetch_sensor_config(
     url: str = DEFAULT_SENSOR_CONFIG_URL,
     cache_path: str = DEFAULT_SENSOR_CONFIG_CACHE,
     addon_instance=None,
+    timeout: int = 10,
 ) -> dict:
     """Fetch sensor config from API and cache locally.
 
@@ -804,7 +806,7 @@ def fetch_sensor_config(
         if token:
             headers["Authorization"] = f"Bearer {token}"
         req = urllib.request.Request(url, headers=headers)
-        with _no_proxy_opener.open(req, timeout=10) as resp:
+        with _no_proxy_opener.open(req, timeout=timeout) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
 
         # SUCCESS: Reset circuit breaker
@@ -880,7 +882,13 @@ def _load_cached_config_or_passthrough(
             with open(cache_file, encoding="utf-8") as f:
                 cached = json.load(f)
             logger.info(f"FAIL-OPEN: Using cached sensor config from {cache_file}")
-            return _parse_sensor_config(cached, addon_instance)
+            config = _parse_sensor_config(cached, addon_instance)
+            # Log cached enforcement policies — stale rules are better than no rules.
+            logger.info(
+                "FAIL-OPEN: Using cached enforcement policies (API unreachable, %d policies)",
+                len(config.get("enforcementPolicies") or []),
+            )
+            return config
         except (json.JSONDecodeError, IOError) as cache_err:
             logger.warning(f"Failed to load cached config: {cache_err}")
 
@@ -1181,6 +1189,20 @@ def _parse_sensor_config(raw: dict, addon_instance=None) -> dict:
             "success": True,
             "executedAt": datetime.now(timezone.utc).isoformat(),
         }
+
+    # Handle app config toggle commands (disable_quit, disable_user_logout, force_auto_start, uninstall_certificate)
+    # These are config toggles — "execution" means "received and will be applied via appConfig"
+    for config_cmd_key in ("disable_quit", "disable_user_logout", "force_auto_start", "uninstall_certificate"):
+        config_cmd_val = commands.get(config_cmd_key)
+        if config_cmd_val is not None:
+            config_cmd_hash = _get_command_hash(config_cmd_key)
+            if config_cmd_hash not in _executed_command_hashes:
+                _executed_command_hashes.add(config_cmd_hash)
+                logger.info(f"Acknowledging {config_cmd_key} command (value={config_cmd_val})")
+                _command_results[config_cmd_key] = {
+                    "success": True,
+                    "executedAt": datetime.now(timezone.utc).isoformat(),
+                }
 
     # --- WRITE STATE FILE FOR SWIFT UI DISPLAY ---
     # Swift reads this for display purposes and handles force_logout + appConfig
@@ -2923,7 +2945,10 @@ class OximyAddon:
                     break  # Stop event was set
                 if not self._enabled:
                     break
-                self._refresh_config()
+                try:
+                    self._refresh_config()
+                except Exception:
+                    logger.error("Config refresh failed unexpectedly", exc_info=True)
 
         self._config_refresh_thread = threading.Thread(
             target=refresh_loop,
@@ -3090,7 +3115,7 @@ class OximyAddon:
         sensor_config = fetch_sensor_config(
             self._sensor_config_url,
             self._sensor_config_cache,
-            addon_instance=self
+            addon_instance=self,
         )
 
         # FAIL-OPEN: Check if this is a passthrough config (API down, no valid cache)
@@ -3120,6 +3145,15 @@ class OximyAddon:
         enforcement_policies = sensor_config.get("enforcementPolicies")
         if enforcement_policies is not None:
             self._enforcement.update_policies(enforcement_policies)
+            logger.info(
+                "[ENFORCEMENT] Loaded %d policies at startup (fail_open=%s)",
+                len(enforcement_policies), self._fail_open_passthrough,
+            )
+        else:
+            logger.warning(
+                "[ENFORCEMENT] No enforcementPolicies in startup config "
+                "(enforcement inactive until refresh)"
+            )
 
         # Load unknown apps cache for daily rate limiting
         self._no_parser_apps_cache = _load_no_parser_apps_cache()
@@ -3252,6 +3286,19 @@ class OximyAddon:
                     _write_proxy_state()
         else:
             logger.warning("Could not get proxy port - system proxy not configured")
+
+        # Pre-load Presidio/spaCy in a background thread.
+        # On first launch of a new build, macOS Gatekeeper verifies every native
+        # .so/.dylib. If this import happens synchronously in the event loop
+        # (during the first enforcement check), it blocks ALL traffic for the
+        # duration of the scan.  By starting the import in a daemon thread the
+        # GIL is released during dlopen(), the event loop stays responsive, and
+        # the verification completes before any enforcement check fires.
+        if self._enforcement:
+            t = threading.Thread(
+                target=self._enforcement.preload, daemon=True, name="presidio-preload"
+            )
+            t.start()
 
     def _delayed_proxy_activation(self):
         """Fallback activation if running() hook isn't called.
@@ -3440,38 +3487,42 @@ class OximyAddon:
             data.ignore_connection = True
             return
 
-        host = data.client_hello.sni or (data.context.server.address[0] if data.context.server.address else None)
-        if not host:
-            return
+        try:
+            host = data.client_hello.sni or (data.context.server.address[0] if data.context.server.address else None)
+            if not host:
+                return
 
-        # Whitelisted domains: always intercept TLS (unless cert-pinned)
-        if matches_domain(host, self._whitelist):
-            # Check for learned passthrough patterns (cert-pinned hosts)
+            # Whitelisted domains: always intercept TLS (unless cert-pinned)
+            if matches_domain(host, self._whitelist):
+                # Check for learned passthrough patterns (cert-pinned hosts)
+                if self._tls and self._tls.should_passthrough(host):
+                    data.ignore_connection = True
+                return
+
+            # Passthrough domains (*.apple.com, *.slack.com, etc.) must ALWAYS
+            # bypass TLS - even for discovery-eligible apps. These are services
+            # with cert pinning or that should never be intercepted.
             if self._tls and self._tls.should_passthrough(host):
                 data.ignore_connection = True
-            return
+                return
 
-        # Passthrough domains (*.apple.com, *.slack.com, etc.) must ALWAYS
-        # bypass TLS - even for discovery-eligible apps. These are services
-        # with cert pinning or that should never be intercepted.
-        if self._tls and self._tls.should_passthrough(host):
+            # Non-whitelisted, non-passthrough domain: check app discovery
+            # Allow TLS interception for no-parser apps that haven't been seen today
+            if self._should_intercept_for_discovery(data.context.client):
+                # Don't passthrough - we want to capture this for discovery
+                return
+
+            # Non-whitelisted, non-passthrough domain: check domain discovery
+            # Allow TLS interception for browsers visiting domains in catalog (allowed_host_origins)
+            if self._should_intercept_for_domain_discovery(host, data.context.client):
+                # Don't passthrough - we want to capture this for discovery
+                return
+
+            # Default: skip TLS interception for non-whitelisted domains
             data.ignore_connection = True
-            return
-
-        # Non-whitelisted, non-passthrough domain: check app discovery
-        # Allow TLS interception for no-parser apps that haven't been seen today
-        if self._should_intercept_for_discovery(data.context.client):
-            # Don't passthrough - we want to capture this for discovery
-            return
-
-        # Non-whitelisted, non-passthrough domain: check domain discovery
-        # Allow TLS interception for browsers visiting domains in catalog (allowed_host_origins)
-        if self._should_intercept_for_domain_discovery(host, data.context.client):
-            # Don't passthrough - we want to capture this for discovery
-            return
-
-        # Default: skip TLS interception for non-whitelisted domains
-        data.ignore_connection = True
+        except Exception:
+            logger.warning("tls_clienthello failed (fail-open: passthrough)", exc_info=True)
+            data.ignore_connection = True
 
     def _should_intercept_for_discovery(self, client) -> bool:
         """Check if we should intercept TLS for app discovery (non-browser, no parser, first today)."""
@@ -3866,7 +3917,11 @@ class OximyAddon:
         except AttributeError:
             enforcement_enabled = False
         if enforcement_enabled:
-            self._enforce_request(flow)
+            # Run in a thread pool so Presidio loading (which triggers macOS
+            # Gatekeeper verification of native libs on first launch) never
+            # blocks the event loop.  The individual flow waits, but other
+            # concurrent flows keep flowing.
+            await asyncio.to_thread(self._enforce_request, flow)
 
     # Path segments that indicate analytics/telemetry (skip enforcement)
     _ANALYTICS_PATH_KEYWORDS = frozenset({
@@ -3874,28 +3929,39 @@ class OximyAddon:
         "diagnostics", "heartbeat", "ping", "health", "autosuggest",
     })
 
+    # Content types where we can redact text in-place in the request body.
+    # For everything else (gRPC, msgpack, etc.) we detect + log but can't
+    # rewrite the binary payload.
+    _REDACTABLE_CONTENT_TYPES = ("json", "text/", "x-www-form-urlencoded")
+
     def _enforce_request(self, flow: http.HTTPFlow) -> None:
         """Check request body for PII and redact it in-flight.
 
-        Runs after STEP 6 (capture marking). Only checks text-based content types.
-        PII is replaced with [REDACTED] placeholders in the request body before
-        it reaches the AI provider. The request always goes through — never 403.
+        Uses normalize_body() to decode ALL content types (JSON, gRPC, SSE,
+        msgpack, protobuf, base64, etc.) — the same decoder the capture
+        pipeline uses — so enforcement covers every AI tool/app.
+
+        For text-based content (JSON, text/*), PII is redacted in-place.
+        For binary formats (gRPC, msgpack), PII is detected and logged but
+        the binary body cannot be rewritten — violations are still reported.
 
         Safety guarantees:
           - Fail-open: any exception → request goes through unchanged.
-          - JSON-safe: if the original body was valid JSON and redaction breaks it,
-            we revert to the original body (fail-open).
-          - Only processes text content types (json, text/*, x-www-form-urlencoded).
+          - JSON-safe: if the original body was valid JSON and redaction
+            breaks it, we revert to the original body (fail-open).
           - Skips analytics/telemetry paths to avoid false positives.
           - Skips bodies > 1MB.
         """
         try:
             content_type = flow.request.headers.get("content-type", "")
-            if not any(ct in content_type for ct in ("json", "text/", "x-www-form-urlencoded")):
+
+            # Decode the body using the same normalizer the capture pipeline uses.
+            raw_body = flow.request.get_content(strict=False)
+            if not raw_body or len(raw_body) > 1_000_000:
                 return
 
-            body = flow.request.get_text(strict=False)
-            if not body or len(body) > 1_000_000:
+            body = normalize_body(raw_body, content_type)
+            if not body:
                 return
 
             # Skip analytics/telemetry endpoints (high false-positive rate)
@@ -3929,34 +3995,49 @@ class OximyAddon:
             if not detected_types:
                 return  # redact_pii found nothing (edge case — fail-open)
 
-            # SAFETY: Verify JSON integrity after redaction.
-            # If the original was valid JSON and redaction broke it, revert.
-            is_json = "json" in content_type
-            if is_json:
-                try:
-                    json.loads(redacted_body)
-                except (json.JSONDecodeError, ValueError):
-                    logger.warning(
-                        "[ENFORCEMENT] Redaction broke JSON structure — "
-                        "reverting to original body (fail-open)"
-                    )
-                    return  # Don't modify — fail-open
-
-            # Replace the request body with the redacted version
-            flow.request.set_text(redacted_body)
-
-            logger.warning(
-                "[ENFORCEMENT] REDACTED %s in %s %s%s",
-                detected_types, method, host, path[:60],
+            # Can we write the redacted text back into the request?
+            can_redact = any(
+                ct in content_type for ct in self._REDACTABLE_CONTENT_TYPES
             )
 
-            # Update violation action to reflect actual redaction
-            violation.action = "redacted"
-            violation.detected_type = ", ".join(detected_types)
-            violation.message = (
-                f"Redacted {', '.join(detected_types)} from "
-                f"{method} {host}{path[:60]}"
-            )
+            if can_redact:
+                # SAFETY: Verify JSON integrity after redaction.
+                is_json = "json" in content_type
+                if is_json:
+                    try:
+                        json.loads(redacted_body)
+                    except (json.JSONDecodeError, ValueError):
+                        logger.warning(
+                            "[ENFORCEMENT] Redaction broke JSON structure — "
+                            "reverting to original body (fail-open)"
+                        )
+                        return  # Don't modify — fail-open
+
+                flow.request.set_text(redacted_body)
+
+                logger.warning(
+                    "[ENFORCEMENT] REDACTED %s in %s %s%s",
+                    detected_types, method, host, path[:60],
+                )
+                violation.action = "redacted"
+                violation.detected_type = ", ".join(detected_types)
+                violation.message = (
+                    f"Redacted {', '.join(detected_types)} from "
+                    f"{method} {host}{path[:60]}"
+                )
+            else:
+                # Binary format (gRPC, msgpack, etc.) — can't rewrite, log only
+                logger.warning(
+                    "[ENFORCEMENT] DETECTED %s in %s %s%s "
+                    "(binary content-type '%s', cannot redact in-place)",
+                    detected_types, method, host, path[:60], content_type,
+                )
+                violation.action = "detected"
+                violation.detected_type = ", ".join(detected_types)
+                violation.message = (
+                    f"Detected {', '.join(detected_types)} in "
+                    f"{method} {host}{path[:60]}"
+                )
 
             # Mark the flow so the trace payload includes enforced=True
             flow.metadata["oximy_enforced"] = True
