@@ -42,22 +42,27 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 FALLBACK_PII_PATTERNS: dict[str, re.Pattern] = {
+    # These are basic regex patterns for when Presidio is unavailable.
+    # They only cover types that regex can reliably detect (structured formats).
+    # NER-based types (person_name, location) require Presidio and are NOT
+    # covered here — regex cannot generalize across languages/formats.
     "email": re.compile(
         r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
     ),
-    # Phone: require structural separators (dashes, dots, spaces, parens) or
-    # a leading +. Plain digit sequences like "1234567890" are NOT matched
-    # to avoid false positives on IDs, timestamps, etc.
+    # Phone: only formatted numbers with separators to avoid false positives.
+    # Bare digit sequences are handled by Presidio's phonenumbers library.
     "phone": re.compile(
-        r"\+\d{1,3}[-.\s]\d{1,4}(?:[-.\s]\d{2,4}){1,3}\b"   # +1-555-123-4567, +44 20 7946 0958
-        r"|\b\(?\d{3}\)[-.\s]\d{3}[-.\s]\d{4}\b"              # (555) 123-4567
-        r"|\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b"                   # 555-123-4567, 555.123.4567
+        r"\+\d{1,3}[-.\s]\d{1,4}(?:[-.\s]\d{2,4}){1,3}\b"    # +1-555-123-4567, +44 20 7946 0958
+        r"|\b\(?\d{3}\)[-.\s]\d{3}[-.\s]\d{4}\b"               # (555) 123-4567
+        r"|\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b",                   # 555-123-4567, 555.123.4567
     ),
+    # SSN: require separators to avoid false positives on protobuf/numeric IDs.
     "ssn": re.compile(
-        r"\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b"
+        r"\b\d{3}[-\s]\d{2}[-\s]\d{4}\b"
     ),
+    # Credit card: require separators to avoid false positives.
     "credit_card": re.compile(
-        r"\b(?:\d{4}[-\s]?){3}\d{4}\b"
+        r"\b\d{4}[-\s]\d{4}[-\s]\d{4}[-\s]\d{4}\b"
     ),
     "api_key": re.compile(
         r"\b(?:sk[-_]|api[-_]?key[-_]?|bearer\s+|token[-_]?)[a-zA-Z0-9]{16,}\b",
@@ -172,6 +177,7 @@ def _add_custom_recognizers(analyzer) -> None:
         return
 
     custom_recognizers = [
+        # -- Secrets / credentials --
         PatternRecognizer(
             supported_entity="API_KEY",
             name="api_key_recognizer",
@@ -235,13 +241,23 @@ def _get_analyzer():
         return _analyzer_engine
     try:
         from presidio_analyzer import AnalyzerEngine
-        _analyzer_engine = AnalyzerEngine()
+        from presidio_analyzer.nlp_engine import NlpEngineProvider
+
+        # Use en_core_web_md (~40MB) for NER (person, location, org, phone, etc.).
+        # The md model includes word vectors for good accuracy at a fraction of
+        # the size of en_core_web_lg (~560MB).
+        nlp_config = {
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": "en", "model_name": "en_core_web_md"}],
+        }
+        nlp_engine = NlpEngineProvider(nlp_configuration=nlp_config).create_engine()
+        _analyzer_engine = AnalyzerEngine(nlp_engine=nlp_engine)
         _add_custom_recognizers(_analyzer_engine)
         _presidio_available = True
-        logger.info("Presidio AnalyzerEngine initialized successfully")
+        logger.info("Presidio AnalyzerEngine initialized with en_core_web_md")
         return _analyzer_engine
-    except ImportError:
-        logger.warning("Presidio not available, falling back to regex patterns")
+    except ImportError as exc:
+        logger.warning("Presidio not available, falling back to regex patterns: %s", exc)
         _presidio_available = False
         return None
     except Exception:
@@ -456,6 +472,20 @@ class EnforcementEngine:
                             exc,
                         )
 
+                data_types = rule_dict.get("dataTypes") or rule_dict.get("data_types", [])
+
+                # Warn about unrecognized data_type names (likely misconfigured)
+                for dt in data_types:
+                    if dt not in OXIMY_TO_PRESIDIO:
+                        logger.warning(
+                            "Unrecognized data_type '%s' in rule %s — "
+                            "will be skipped during detection. "
+                            "Valid types: %s",
+                            dt,
+                            rule_dict.get("id", "?"),
+                            ", ".join(sorted(OXIMY_TO_PRESIDIO.keys())),
+                        )
+
                 rules.append(
                     EnforcementRule(
                         id=rule_dict.get("id", ""),
@@ -463,7 +493,7 @@ class EnforcementEngine:
                         name=rule_dict.get("name", ""),
                         severity=rule_dict.get("severity", "medium"),
                         patterns=compiled_patterns,
-                        data_types=rule_dict.get("dataTypes") or rule_dict.get("data_types", []),
+                        data_types=data_types,
                     )
                 )
 
@@ -651,6 +681,11 @@ class EnforcementEngine:
         For large bodies (>100KB), skips NER-based detection (PERSON, LOCATION)
         to keep latency under 50ms.
 
+        Defense in depth: if Presidio is available but returns no match,
+        we still try the regex patterns as a safety net.  This covers gaps
+        where Presidio's recognizers under-detect (e.g. US_SSN patterns or
+        PHONE_NUMBER confidence below threshold).
+
         Returns:
             A tuple of (oximy_type, detection_method, confidence_score) on
             match, or None if nothing matched.
@@ -661,9 +696,13 @@ class EnforcementEngine:
             return EnforcementEngine._match_data_types_regex(data_types, body)
 
         try:
-            return EnforcementEngine._match_data_types_presidio(
+            result = EnforcementEngine._match_data_types_presidio(
                 analyzer, data_types, body
             )
+            if result is not None:
+                return result
+            # Presidio found nothing — try regex as safety net
+            return EnforcementEngine._match_data_types_regex(data_types, body)
         except Exception:
             logger.debug(
                 "Presidio analysis failed, falling back to regex", exc_info=True
@@ -788,6 +827,11 @@ class EnforcementEngine:
         "private_key": "PRIVATE_KEY",
         "person_name": "PERSON",
         "location": "LOCATION",
+        "us_driver_license": "DRIVER_LICENSE",
+        "us_passport": "PASSPORT",
+        "iban_code": "IBAN",
+        "us_bank_number": "BANK_ACCOUNT",
+        "us_itin": "ITIN",
     }
 
     def redact_pii(self, body_text: str) -> tuple[str, list[str]]:
@@ -853,6 +897,14 @@ class EnforcementEngine:
                     )
                     redacted_text = presidio_text
                     detected_types.extend(presidio_types)
+                    # Safety net: run regex on types Presidio didn't catch
+                    remaining = data_types_to_check - set(presidio_types)
+                    if remaining:
+                        regex_text, regex_types = self._redact_pii_regex(
+                            redacted_text, remaining
+                        )
+                        redacted_text = regex_text
+                        detected_types.extend(regex_types)
                 except Exception:
                     logger.debug(
                         "Presidio redaction failed, falling back to regex",

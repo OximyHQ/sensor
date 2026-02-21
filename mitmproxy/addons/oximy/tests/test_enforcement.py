@@ -107,8 +107,10 @@ class TestPIIPatternSSN:
     def test_spaced_ssn(self):
         assert re.search(PII_PATTERNS["ssn"], "123 45 6789")
 
-    def test_no_separator_ssn(self):
-        assert re.search(PII_PATTERNS["ssn"], "123456789")
+    def test_no_separator_ssn_no_match(self):
+        # Plain 9-digit strings must NOT match — they cause false positives
+        # on protobuf field numbers, timestamps, session IDs, etc.
+        assert not re.search(PII_PATTERNS["ssn"], "123456789")
 
     def test_wrong_grouping_no_match(self):
         assert not re.search(PII_PATTERNS["ssn"], "12-345-6789")
@@ -126,8 +128,10 @@ class TestPIIPatternCreditCard:
     def test_spaced_card(self):
         assert re.search(PII_PATTERNS["credit_card"], "4111 1111 1111 1111")
 
-    def test_no_separator_card(self):
-        assert re.search(PII_PATTERNS["credit_card"], "4111111111111111")
+    def test_no_separator_card_no_match(self):
+        # Plain 16-digit strings must NOT match — they cause false positives
+        # on protobuf data, long numeric IDs, etc.
+        assert not re.search(PII_PATTERNS["credit_card"], "4111111111111111")
 
     def test_short_number_no_match(self):
         assert not re.search(PII_PATTERNS["credit_card"], "411-111-111")
