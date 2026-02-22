@@ -244,6 +244,8 @@ jobs:
             (Get-Content $iss) -replace '#define MyAppVersion ".*"', '#define MyAppVersion "${{ inputs.version_windows }}"' | Set-Content $iss
             $innoPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
             if (Test-Path $innoPath) {
+              # Clean output dir first so only one versioned .exe is produced
+              Remove-Item -Path "installer\Output\*.exe" -ErrorAction SilentlyContinue
               & $innoPath $iss
             } else {
               Write-Warning "Inno Setup not found, skipping installer creation"
