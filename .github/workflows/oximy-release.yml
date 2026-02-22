@@ -395,8 +395,11 @@ jobs:
             UPLOAD_ASSETS="$UPLOAD_ASSETS release-assets/latest/Oximy.dmg release-assets/latest/Oximy.pkg"
           fi
           if [ "${{ needs.build-windows.result }}" = "success" ]; then
-            cp release-assets/windows/*.exe release-assets/latest/OximySetup.exe
-            UPLOAD_ASSETS="$UPLOAD_ASSETS release-assets/latest/OximySetup.exe"
+            WIN_EXE=$(ls release-assets/windows/*.exe 2>/dev/null | head -1)
+            if [ -n "$WIN_EXE" ]; then
+              cp "$WIN_EXE" release-assets/latest/OximySetup.exe
+              UPLOAD_ASSETS="$UPLOAD_ASSETS release-assets/latest/OximySetup.exe"
+            fi
           fi
 
           LATEST_NOTES="This always points to the most recent stable release.
