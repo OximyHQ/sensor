@@ -380,17 +380,20 @@ jobs:
           PREV=$(cat /tmp/prev-version/version.json 2>/dev/null || echo '{}')
           LATEST_MAC=$(echo "$PREV" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('latest_macos','0.0.0'))" 2>/dev/null || echo "0.0.0")
           LATEST_WIN=$(echo "$PREV" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('latest_windows','0.0.0'))" 2>/dev/null || echo "0.0.0")
+          MIN_SUPPORTED=$(echo "$PREV" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('min_supported','0.0.3'))" 2>/dev/null || echo "0.0.3")
 
           # Update only the platform(s) built this run
           [ "${{ needs.build-macos.result }}" = "success" ] && LATEST_MAC="${{ inputs.version_macos }}"
           [ "${{ needs.build-windows.result }}" = "success" ] && LATEST_WIN="${{ inputs.version_windows }}"
+          # Override min_supported only if explicitly changed from the default
+          [ "${{ inputs.min_supported }}" != "0.0.3" ] && MIN_SUPPORTED="${{ inputs.min_supported }}"
 
           # Generate version.json
           cat > release-assets/latest/version.json << VJEOF
           {
             "latest_macos": "${LATEST_MAC}",
             "latest_windows": "${LATEST_WIN}",
-            "min_supported": "${{ inputs.min_supported }}",
+            "min_supported": "${MIN_SUPPORTED}",
             "download": {
               "macos": "https://github.com/OximyHQ/sensor/releases/download/latest/Oximy.pkg",
               "windows": "https://github.com/OximyHQ/sensor/releases/download/latest/OximySetup.exe"
