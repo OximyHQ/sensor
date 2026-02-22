@@ -62,20 +62,21 @@ public class UpdateCheckService
         if (info == null) return;
 
         var currentVersion = Constants.Version;
+        var remoteVersion = info.LatestWindows;
 
         if (CompareVersions(currentVersion, info.MinSupported) < 0)
         {
             // Below minimum supported version
-            LatestVersion = info.Latest;
+            LatestVersion = remoteVersion;
             DownloadUrl = info.Download?.Windows;
             Unsupported = true;
             UpdateAvailable = true;
             UpdateStatusChanged?.Invoke(this, EventArgs.Empty);
         }
-        else if (CompareVersions(currentVersion, info.Latest) < 0)
+        else if (CompareVersions(currentVersion, remoteVersion) < 0)
         {
             // Update available but not critical
-            LatestVersion = info.Latest;
+            LatestVersion = remoteVersion;
             DownloadUrl = info.Download?.Windows;
             UpdateAvailable = true;
             UpdateStatusChanged?.Invoke(this, EventArgs.Empty);
@@ -102,8 +103,11 @@ public class UpdateCheckService
 
     private class VersionInfo
     {
-        [JsonPropertyName("latest")]
-        public string Latest { get; set; } = "";
+        [JsonPropertyName("latest_macos")]
+        public string LatestMacos { get; set; } = "";
+
+        [JsonPropertyName("latest_windows")]
+        public string LatestWindows { get; set; } = "";
 
         [JsonPropertyName("min_supported")]
         public string MinSupported { get; set; } = "";

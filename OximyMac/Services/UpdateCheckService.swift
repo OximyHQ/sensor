@@ -47,16 +47,17 @@ final class UpdateCheckService: ObservableObject {
 
             let info = try JSONDecoder().decode(VersionInfo.self, from: data)
             let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+            let remoteVersion = info.latestMacos
 
             if compareVersions(currentVersion, info.minSupported) == .orderedAscending {
                 // Below minimum supported version
-                latestVersion = info.latest
+                latestVersion = remoteVersion
                 downloadURL = URL(string: info.download.macos)
                 unsupported = true
                 updateAvailable = true
-            } else if compareVersions(currentVersion, info.latest) == .orderedAscending {
+            } else if compareVersions(currentVersion, remoteVersion) == .orderedAscending {
                 // Update available but not critical
-                latestVersion = info.latest
+                latestVersion = remoteVersion
                 downloadURL = URL(string: info.download.macos)
                 updateAvailable = true
             }
@@ -84,7 +85,8 @@ final class UpdateCheckService: ObservableObject {
 // MARK: - JSON Model
 
 private struct VersionInfo: Decodable {
-    let latest: String
+    let latestMacos: String
+    let latestWindows: String
     let minSupported: String
     let download: Download
 
@@ -94,7 +96,8 @@ private struct VersionInfo: Decodable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case latest
+        case latestMacos = "latest_macos"
+        case latestWindows = "latest_windows"
         case minSupported = "min_supported"
         case download
     }

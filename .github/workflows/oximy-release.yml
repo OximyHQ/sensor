@@ -26,10 +26,16 @@ name: Oximy Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version number (e.g., 1.2.0)'
-        required: true
+      version_macos:
+        description: 'macOS version to release (e.g. 1.0.1). Leave empty to skip Mac build.'
+        required: false
         type: string
+        default: ''
+      version_windows:
+        description: 'Windows version to release (e.g. 1.0.0). Leave empty to skip Windows build.'
+        required: false
+        type: string
+        default: ''
       min_supported:
         description: 'Minimum supported version (bump on breaking changes)'
         required: false
@@ -43,9 +49,6 @@ on:
 
 permissions:
   contents: write
-
-env:
-  VERSION: ${{ inputs.version }}
 
 jobs:
   # ===========================================
@@ -63,27 +66,39 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate inputs
+        run: |
+          if [ -z "${{ inputs.version_macos }}" ] && [ -z "${{ inputs.version_windows }}" ]; then
+            echo "::error::At least one of version_macos or version_windows must be provided."
+            exit 1
+          fi
+          echo "macOS version: ${{ inputs.version_macos || '(skipped)' }}"
+          echo "Windows version: ${{ inputs.version_windows || '(skipped)' }}"
+
       - name: Check for duplicate version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="oximy-v${{ inputs.version }}"
-          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "::error::Version ${{ inputs.version }} already exists (tag $TAG). Use a different version number."
-            exit 1
-          fi
-          # Also check if a GitHub release already exists
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::GitHub release $TAG already exists. Delete it first or use a different version."
-            exit 1
-          fi
-          echo "Version ${{ inputs.version }} is available."
+          check_tag() {
+            local TAG="$1"
+            if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "::error::Tag $TAG already exists. Use a different version number."
+              exit 1
+            fi
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "::error::GitHub release $TAG already exists. Delete it first or use a different version."
+              exit 1
+            fi
+            echo "Tag $TAG is available."
+          }
+          [ -n "${{ inputs.version_macos }}" ] && check_tag "oximy-mac-v${{ inputs.version_macos }}"
+          [ -n "${{ inputs.version_windows }}" ] && check_tag "oximy-win-v${{ inputs.version_windows }}"
 
       - name: Generate changelog
         id: changelog
         run: |
-          # Find the previous release tag (most recent oximy-v* tag)
-          PREV_TAG=$(git tag --list 'oximy-v*' --sort=-v:refname | head -1)
+          # Find the most recent release tag across both platforms
+          PREV_TAG=$(git tag --list 'oximy-mac-v*' 'oximy-win-v*' --sort=-v:refname | head -1)
 
           if [ -z "$PREV_TAG" ]; then
             echo "No previous release tag found — including all commits."
@@ -113,6 +128,7 @@ jobs:
   build-macos:
     name: Build macOS
     needs: [preflight]
+    if: inputs.version_macos != ''
     runs-on: macos-14
     outputs:
       dmg-name: ${{ steps.build.outputs.dmg-name }}
@@ -154,7 +170,7 @@ jobs:
       - name: Build macOS app
         id: build
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ inputs.version_macos }}
           DEVELOPER_ID: "Developer ID Application: Oximy, Inc. (K6H6LCASRA)"
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
@@ -177,8 +193,8 @@ jobs:
         with:
           name: macos-release
           path: |
-            OximyMac/build/Oximy-${{ inputs.version }}.dmg
-            OximyMac/build/Oximy-${{ inputs.version }}.pkg
+            OximyMac/build/Oximy-${{ inputs.version_macos }}.dmg
+            OximyMac/build/Oximy-${{ inputs.version_macos }}.pkg
           retention-days: 30
 
   # ===========================================
@@ -187,6 +203,7 @@ jobs:
   build-windows:
     name: Build Windows
     needs: [preflight]
+    if: inputs.version_windows != ''
     runs-on: windows-latest
     outputs:
       setup-name: ${{ steps.build.outputs.setup-name }}
@@ -202,7 +219,7 @@ jobs:
 
       - name: Validate version format
         run: |
-          $version = "${{ inputs.version }}"
+          $version = "${{ inputs.version_windows }}"
           $semverPattern = '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*)?$'
           if ($version -notmatch $semverPattern) {
               Write-Error "Invalid version format: '$version'. Must be SemVer2 (e.g., 1.0.0, 1.2.3-beta.1)"
@@ -213,21 +230,21 @@ jobs:
       - name: Build Windows app
         id: build
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ inputs.version_windows }}
           BETTERSTACK_ERRORS_DSN: ${{ secrets.BETTERSTACK_ERRORS_DSN }}
           BETTERSTACK_LOGS_TOKEN: ${{ secrets.BETTERSTACK_LOGS_TOKEN }}
           BETTERSTACK_LOGS_HOST: ${{ secrets.BETTERSTACK_LOGS_HOST }}
         run: |
           # Use the unified build script via bash (Git Bash on Windows)
           bash -c "./build-prod.sh windows --version $env:VERSION"
-          echo "setup-name=OximySetup-${{ inputs.version }}.exe" >> $env:GITHUB_OUTPUT
+          echo "setup-name=OximySetup-${{ inputs.version_windows }}.exe" >> $env:GITHUB_OUTPUT
 
       - name: Create Inno Setup installer (optional)
         working-directory: OximyWindows
         run: |
           $iss = "installer\OximySetup.iss"
           if (Test-Path $iss) {
-            (Get-Content $iss) -replace '#define MyAppVersion ".*"', '#define MyAppVersion "${{ inputs.version }}"' | Set-Content $iss
+            (Get-Content $iss) -replace '#define MyAppVersion ".*"', '#define MyAppVersion "${{ inputs.version_windows }}"' | Set-Content $iss
             $innoPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
             if (Test-Path $innoPath) {
               & $innoPath $iss
@@ -249,6 +266,10 @@ jobs:
   create-release:
     name: Create Release
     needs: [preflight, build-macos, build-windows]
+    if: |
+      always() &&
+      needs.preflight.result == 'success' &&
+      (needs.build-macos.result == 'success' || needs.build-windows.result == 'success')
     runs-on: ubuntu-latest
 
     steps:
@@ -256,12 +277,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download macOS artifacts
+        if: needs.build-macos.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: macos-release
           path: release-assets/macos
 
       - name: Download Windows artifacts
+        if: needs.build-windows.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: windows-release
@@ -275,59 +298,90 @@ jobs:
           echo "=== Windows ==="
           ls -la release-assets/windows/ || echo "No Windows files"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: oximy-v${{ inputs.version }}
-          name: Oximy v${{ inputs.version }}
-          prerelease: ${{ inputs.prerelease }}
-          generate_release_notes: true
-          files: |
-            release-assets/macos/Oximy-${{ inputs.version }}.dmg
-            release-assets/macos/Oximy-${{ inputs.version }}.pkg
-            release-assets/windows/*.exe
-          body: |
-            ## Oximy v${{ inputs.version }}
+      - name: Create versioned platform release(s)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRERELEASE_FLAG=""
+          [ "${{ inputs.prerelease }}" = "true" ] && PRERELEASE_FLAG="--prerelease"
 
-            ### Downloads
+          # macOS versioned release
+          if [ "${{ needs.build-macos.result }}" = "success" ]; then
+            MAC_TAG="oximy-mac-v${{ inputs.version_macos }}"
+            cat > /tmp/mac-notes.md << 'NOTES_EOF'
+          ## macOS v${{ inputs.version_macos }}
 
-            | Platform | Download | Use |
-            |----------|----------|-----|
-            | macOS (Apple Silicon & Intel) | [Oximy-${{ inputs.version }}.dmg](https://github.com/OximyHQ/sensor/releases/download/oximy-v${{ inputs.version }}/Oximy-${{ inputs.version }}.dmg) | First install |
-            | macOS (PKG Installer) | [Oximy-${{ inputs.version }}.pkg](https://github.com/OximyHQ/sensor/releases/download/oximy-v${{ inputs.version }}/Oximy-${{ inputs.version }}.pkg) | Updates & MDM |
-            | Windows (64-bit) | [OximySetup-${{ inputs.version }}.exe](https://github.com/OximyHQ/sensor/releases/download/oximy-v${{ inputs.version }}/OximySetup-${{ inputs.version }}.exe) | Install & Update |
+          ### Downloads
 
-            ### What's Changed
+          | | |
+          |---|---|
+          | [Oximy-${{ inputs.version_macos }}.dmg](https://github.com/OximyHQ/sensor/releases/download/oximy-mac-v${{ inputs.version_macos }}/Oximy-${{ inputs.version_macos }}.dmg) | First install |
+          | [Oximy-${{ inputs.version_macos }}.pkg](https://github.com/OximyHQ/sensor/releases/download/oximy-mac-v${{ inputs.version_macos }}/Oximy-${{ inputs.version_macos }}.pkg) | Updates & MDM |
 
-            ${{ needs.preflight.outputs.changelog }}
+          ### What's Changed
 
-            ### macOS Compatibility
+          ${{ needs.preflight.outputs.changelog }}
 
-            - **Apple Silicon (M1/M2/M3/M4)**: Native ARM64 binary
-            - **Intel Macs**: Native x86_64 binary (Universal Binary)
+          ### Compatibility
+          - **Apple Silicon (M1/M2/M3/M4)**: Native ARM64 binary
+          - **Intel Macs**: Native x86_64 binary (Universal Binary)
+          NOTES_EOF
+            gh release create "$MAC_TAG" \
+              --title "Oximy macOS v${{ inputs.version_macos }}" \
+              $PRERELEASE_FLAG \
+              --notes-file /tmp/mac-notes.md \
+              "release-assets/macos/Oximy-${{ inputs.version_macos }}.dmg" \
+              "release-assets/macos/Oximy-${{ inputs.version_macos }}.pkg"
+            echo "Created macOS release: $MAC_TAG"
+          fi
 
-            ---
+          # Windows versioned release
+          if [ "${{ needs.build-windows.result }}" = "success" ]; then
+            WIN_TAG="oximy-win-v${{ inputs.version_windows }}"
+            cat > /tmp/win-notes.md << 'NOTES_EOF'
+          ## Windows v${{ inputs.version_windows }}
 
-            **Full Changelog**: https://github.com/OximyHQ/sensor/compare/...oximy-v${{ inputs.version }}
+          ### Downloads
 
-      - name: Update latest tag
+          | | |
+          |---|---|
+          | [OximySetup-${{ inputs.version_windows }}.exe](https://github.com/OximyHQ/sensor/releases/download/oximy-win-v${{ inputs.version_windows }}/OximySetup-${{ inputs.version_windows }}.exe) | Install & Update |
+
+          ### What's Changed
+
+          ${{ needs.preflight.outputs.changelog }}
+          NOTES_EOF
+            gh release create "$WIN_TAG" \
+              --title "Oximy Windows v${{ inputs.version_windows }}" \
+              $PRERELEASE_FLAG \
+              --notes-file /tmp/win-notes.md \
+              release-assets/windows/*.exe
+            echo "Created Windows release: $WIN_TAG"
+          fi
+
+      - name: Update latest release
         if: ${{ inputs.prerelease == false }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Copy assets with fixed names so the download URLs never change
           mkdir -p release-assets/latest
-          cp release-assets/macos/Oximy-${{ inputs.version }}.dmg release-assets/latest/Oximy.dmg
-          cp release-assets/macos/Oximy-${{ inputs.version }}.pkg release-assets/latest/Oximy.pkg
-          # Copy Windows installer if it exists
-          if ls release-assets/windows/*.exe 1>/dev/null 2>&1; then
-            cp release-assets/windows/*.exe release-assets/latest/OximySetup.exe
-          fi
 
-          # Generate version.json for in-app update checks
+          # Fetch current version.json to preserve the other platform's version
+          mkdir -p /tmp/prev-version
+          gh release download latest --pattern version.json -D /tmp/prev-version 2>/dev/null || true
+          PREV=$(cat /tmp/prev-version/version.json 2>/dev/null || echo '{}')
+          LATEST_MAC=$(echo "$PREV" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('latest_macos','0.0.0'))" 2>/dev/null || echo "0.0.0")
+          LATEST_WIN=$(echo "$PREV" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('latest_windows','0.0.0'))" 2>/dev/null || echo "0.0.0")
+
+          # Update only the platform(s) built this run
+          [ "${{ needs.build-macos.result }}" = "success" ] && LATEST_MAC="${{ inputs.version_macos }}"
+          [ "${{ needs.build-windows.result }}" = "success" ] && LATEST_WIN="${{ inputs.version_windows }}"
+
+          # Generate version.json
           cat > release-assets/latest/version.json << VJEOF
           {
-            "latest": "${{ inputs.version }}",
+            "latest_macos": "${LATEST_MAC}",
+            "latest_windows": "${LATEST_WIN}",
             "min_supported": "${{ inputs.min_supported }}",
             "download": {
               "macos": "https://github.com/OximyHQ/sensor/releases/download/latest/Oximy.pkg",
@@ -336,21 +390,21 @@ jobs:
           }
           VJEOF
 
-          # Delete existing 'latest' release if it exists
-          gh release delete latest --yes 2>/dev/null || true
-          # Force-move the 'latest' git tag to this commit
-          git tag -f latest
-          git push origin latest --force
-          # Build the file list (only include assets that exist)
-          ASSETS="release-assets/latest/Oximy.dmg release-assets/latest/Oximy.pkg release-assets/latest/version.json"
-          if [ -f release-assets/latest/OximySetup.exe ]; then
-            ASSETS="$ASSETS release-assets/latest/OximySetup.exe"
+          # Rename platform assets to fixed names for static URLs
+          UPLOAD_ASSETS="release-assets/latest/version.json"
+          if [ "${{ needs.build-macos.result }}" = "success" ]; then
+            cp "release-assets/macos/Oximy-${{ inputs.version_macos }}.dmg" release-assets/latest/Oximy.dmg
+            cp "release-assets/macos/Oximy-${{ inputs.version_macos }}.pkg" release-assets/latest/Oximy.pkg
+            UPLOAD_ASSETS="$UPLOAD_ASSETS release-assets/latest/Oximy.dmg release-assets/latest/Oximy.pkg"
+          fi
+          if [ "${{ needs.build-windows.result }}" = "success" ]; then
+            cp release-assets/windows/*.exe release-assets/latest/OximySetup.exe
+            UPLOAD_ASSETS="$UPLOAD_ASSETS release-assets/latest/OximySetup.exe"
           fi
 
-          # Create a 'latest' release with fixed-name assets
-          gh release create latest \
-            --title "Latest Stable — Oximy v${{ inputs.version }}" \
-            --notes "This always points to the most recent stable release. Current: **v${{ inputs.version }}**
+          LATEST_NOTES="This always points to the most recent stable release.
+
+          **macOS**: v${LATEST_MAC} · **Windows**: v${LATEST_WIN}
 
           ## Download
 
@@ -362,22 +416,42 @@ jobs:
 
           ## Auto-Update
 
-          Apps check [version.json](https://github.com/OximyHQ/sensor/releases/download/latest/version.json) on startup." \
-            --latest \
-            $ASSETS
+          Apps check [version.json](https://github.com/OximyHQ/sensor/releases/download/latest/version.json) on startup."
+
+          if gh release view latest >/dev/null 2>&1; then
+            # Update existing 'latest' release — upload/replace only the new assets
+            # (preserves the other platform's assets already in the release)
+            gh release upload latest --clobber $UPLOAD_ASSETS
+            gh release edit latest \
+              --title "Latest Stable — macOS v${LATEST_MAC} / Windows v${LATEST_WIN}" \
+              --notes "$LATEST_NOTES"
+          else
+            # First-ever 'latest' release — create it
+            git tag -f latest
+            git push origin latest --force
+            gh release create latest \
+              --title "Latest Stable — macOS v${LATEST_MAC} / Windows v${LATEST_WIN}" \
+              --notes "$LATEST_NOTES" \
+              --latest \
+              $UPLOAD_ASSETS
+          fi
 
       - name: Summary
         run: |
           echo "## Release Created!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version**: ${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag**: oximy-v${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "**Pre-release**: ${{ inputs.prerelease }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Download Links" >> $GITHUB_STEP_SUMMARY
-          echo "- [macOS DMG](https://github.com/OximyHQ/sensor/releases/download/oximy-v${{ inputs.version }}/Oximy-${{ inputs.version }}.dmg)" >> $GITHUB_STEP_SUMMARY
-          echo "- [macOS PKG](https://github.com/OximyHQ/sensor/releases/download/oximy-v${{ inputs.version }}/Oximy-${{ inputs.version }}.pkg)" >> $GITHUB_STEP_SUMMARY
-          echo "- [Windows Installer](https://github.com/OximyHQ/sensor/releases/download/oximy-v${{ inputs.version }}/OximySetup-${{ inputs.version }}.exe)" >> $GITHUB_STEP_SUMMARY
+          echo "### Versioned Releases" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.build-macos.result }}" = "success" ]; then
+            echo "- **macOS** [oximy-mac-v${{ inputs.version_macos }}](https://github.com/OximyHQ/sensor/releases/tag/oximy-mac-v${{ inputs.version_macos }})" >> $GITHUB_STEP_SUMMARY
+            echo "  - [Oximy-${{ inputs.version_macos }}.dmg](https://github.com/OximyHQ/sensor/releases/download/oximy-mac-v${{ inputs.version_macos }}/Oximy-${{ inputs.version_macos }}.dmg)" >> $GITHUB_STEP_SUMMARY
+            echo "  - [Oximy-${{ inputs.version_macos }}.pkg](https://github.com/OximyHQ/sensor/releases/download/oximy-mac-v${{ inputs.version_macos }}/Oximy-${{ inputs.version_macos }}.pkg)" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "${{ needs.build-windows.result }}" = "success" ]; then
+            echo "- **Windows** [oximy-win-v${{ inputs.version_windows }}](https://github.com/OximyHQ/sensor/releases/tag/oximy-win-v${{ inputs.version_windows }})" >> $GITHUB_STEP_SUMMARY
+            echo "  - [OximySetup-${{ inputs.version_windows }}.exe](https://github.com/OximyHQ/sensor/releases/download/oximy-win-v${{ inputs.version_windows }}/OximySetup-${{ inputs.version_windows }}.exe)" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Notify Slack
         if: always()
@@ -386,21 +460,30 @@ jobs:
         run: |
           REPO="${{ github.repository }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          RELEASE_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/oximy-v${{ inputs.version }}"
           TRIGGERED_BY="${{ github.actor }}"
+
+          # Build platform label and release links
+          PLATFORMS=""
+          RELEASE_LINKS=""
+          if [ "${{ needs.build-macos.result }}" = "success" ]; then
+            PLATFORMS="macOS v${{ inputs.version_macos }}"
+            RELEASE_LINKS=":apple: <https://github.com/${REPO}/releases/tag/oximy-mac-v${{ inputs.version_macos }}|macOS v${{ inputs.version_macos }}>"
+          fi
+          if [ "${{ needs.build-windows.result }}" = "success" ]; then
+            PLATFORMS="${PLATFORMS:+$PLATFORMS · }Windows v${{ inputs.version_windows }}"
+            RELEASE_LINKS="${RELEASE_LINKS:+$RELEASE_LINKS · }:window: <https://github.com/${REPO}/releases/tag/oximy-win-v${{ inputs.version_windows }}|Windows v${{ inputs.version_windows }}>"
+          fi
 
           if [ "${{ job.status }}" = "success" ]; then
             COLOR="#22c55e"
-            TITLE=":white_check_mark: Sensor release v${{ inputs.version }} succeeded"
-            LINKS=":package: <${RELEASE_URL}|View release> · <https://github.com/${REPO}/releases/tag/latest|latest tag>"
+            TITLE=":white_check_mark: Sensor release succeeded — ${PLATFORMS}"
+            LINKS="${RELEASE_LINKS}\n<https://github.com/${REPO}/releases/tag/latest|latest tag>"
             AUTO_UPDATE="\n:arrows_counterclockwise: *Auto-update:* \`version.json\` updated — running apps will see this on next launch"
-            ARTIFACTS="\n:apple: DMG + PKG (signed, notarized) · :window: EXE installer"
           else
             COLOR="#ef4444"
-            TITLE=":x: Sensor release v${{ inputs.version }} failed"
+            TITLE=":x: Sensor release failed — ${PLATFORMS}"
             LINKS=":warning: <${RUN_URL}|View build logs>"
             AUTO_UPDATE=""
-            ARTIFACTS=""
           fi
 
           PRERELEASE_TAG=""
@@ -421,7 +504,7 @@ jobs:
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": "*${TITLE}*\n\n:package: *Repo:* \`${REPO}\`\n:label: *Version:* \`v${{ inputs.version }}\`\n:bust_in_silhouette: *Triggered by:* ${TRIGGERED_BY}\n${LINKS}${ARTIFACTS}${AUTO_UPDATE}${PRERELEASE_TAG}"
+                      "text": "*${TITLE}*\n\n:package: *Repo:* \`${REPO}\`\n:bust_in_silhouette: *Triggered by:* ${TRIGGERED_BY}\n${LINKS}${AUTO_UPDATE}${PRERELEASE_TAG}"
                     }
                   }
                 ]

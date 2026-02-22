@@ -158,19 +158,22 @@ build_mac() {
 
     # Step 1: Create Secrets.swift
     print_header "Step 1/9: Creating Secrets.swift"
-    if [ -n "$SENTRY_DSN" ]; then
-        cat > App/Secrets.swift << EOF
+    SENTRY_VAL="${BETTERSTACK_ERRORS_DSN:-${SENTRY_DSN:-}}"
+    BSTACK_TOKEN="${BETTERSTACK_LOGS_TOKEN:-}"
+    BSTACK_HOST="${BETTERSTACK_LOGS_HOST:-}"
+
+    to_swift_opt() { [ -n "$1" ] && echo "\"$1\"" || echo "nil"; }
+
+    cat > App/Secrets.swift << EOF
 import Foundation
 
 enum Secrets {
-    static let sentryDSN: String? = "$SENTRY_DSN"
+    static let sentryDSN: String? = $(to_swift_opt "$SENTRY_VAL")
+    static let betterStackLogsToken: String? = $(to_swift_opt "$BSTACK_TOKEN")
+    static let betterStackLogsHost: String? = $(to_swift_opt "$BSTACK_HOST")
 }
 EOF
-        print_success "Created Secrets.swift with Sentry DSN"
-    else
-        cp App/Secrets.example.swift App/Secrets.swift
-        print_warning "Created Secrets.swift from example (no SENTRY_DSN)"
-    fi
+    print_success "Created Secrets.swift (sentry=$([ -n "$SENTRY_VAL" ] && echo set || echo unset), bstack=$([ -n "$BSTACK_TOKEN" ] && echo set || echo unset))"
 
     # Step 2: Build Python embed
     print_header "Step 2/9: Building Python Embed"
@@ -517,11 +520,33 @@ build_windows() {
 
     cd "$SCRIPT_DIR/OximyWindows"
 
-    # Step 0: Sentry DSN is hardcoded in SentryService.cs (Secrets partial class).
-    # The SENTRY_DSN env var can still override it at runtime via App.xaml.cs.
-    # No Secrets.cs generation needed — avoids duplicate property compilation error.
-    print_header "Step 0: Sentry DSN (hardcoded)"
-    print_success "Sentry DSN is hardcoded in SentryService.cs — no Secrets.cs needed"
+    # Step 0: Generate Secrets.cs from env vars (file is gitignored — must be created at build time)
+    print_header "Step 0: Generating Secrets.cs"
+    WIN_SENTRY_VAL="${BETTERSTACK_ERRORS_DSN:-${SENTRY_DSN:-}}"
+    WIN_BSTACK_TOKEN="${BETTERSTACK_LOGS_TOKEN:-}"
+    WIN_BSTACK_HOST="${BETTERSTACK_LOGS_HOST:-}"
+
+    to_cs_opt() { [ -n "$1" ] && echo "\"$1\"" || echo "null"; }
+
+    # Save existing local Secrets.cs so we can restore it after build
+    SECRETS_CS="src/OximyWindows/Secrets.cs"
+    SECRETS_CS_BACKUP=""
+    if [ -f "$SECRETS_CS" ]; then
+        SECRETS_CS_BACKUP=$(mktemp)
+        cp "$SECRETS_CS" "$SECRETS_CS_BACKUP"
+    fi
+
+    cat > "$SECRETS_CS" << CSEOF
+namespace OximyWindows;
+
+public static partial class Secrets
+{
+    public static string? SentryDsn => $(to_cs_opt "$WIN_SENTRY_VAL");
+    public static string? BetterStackLogsToken => $(to_cs_opt "$WIN_BSTACK_TOKEN");
+    public static string? BetterStackLogsHost => $(to_cs_opt "$WIN_BSTACK_HOST");
+}
+CSEOF
+    print_success "Generated Secrets.cs (sentry=$([ -n "$WIN_SENTRY_VAL" ] && echo set || echo unset), bstack=$([ -n "$WIN_BSTACK_TOKEN" ] && echo set || echo unset))"
 
     # Update version in project files
     print_header "Step 1/3: Updating Version"
@@ -552,6 +577,16 @@ build_windows() {
     fi
 
     print_success "Build complete"
+
+    # Restore Secrets.cs — tokens are baked into the binary
+    cd "$SCRIPT_DIR/OximyWindows"
+    if [ -n "$SECRETS_CS_BACKUP" ] && [ -f "$SECRETS_CS_BACKUP" ]; then
+        mv "$SECRETS_CS_BACKUP" src/OximyWindows/Secrets.cs
+        print_success "Secrets.cs restored to previous state"
+    else
+        rm -f src/OximyWindows/Secrets.cs
+        print_success "Secrets.cs removed (tokens baked into binary)"
+    fi
 
     # Summary
     print_header "Step 3/3: Build Summary"
