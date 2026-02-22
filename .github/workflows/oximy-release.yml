@@ -305,7 +305,10 @@ jobs:
           # macOS versioned release
           if [ "${{ needs.build-macos.result }}" = "success" ]; then
             MAC_TAG="oximy-mac-v${{ inputs.version_macos }}"
-            cat > /tmp/mac-notes.md << 'NOTES_EOF'
+            if gh release view "$MAC_TAG" >/dev/null 2>&1; then
+              echo "Release $MAC_TAG already exists — skipping creation (idempotent re-run)"
+            else
+              cat > /tmp/mac-notes.md << 'NOTES_EOF'
           ## macOS v${{ inputs.version_macos }}
 
           ### Downloads
@@ -323,19 +326,23 @@ jobs:
           - **Apple Silicon (M1/M2/M3/M4)**: Native ARM64 binary
           - **Intel Macs**: Native x86_64 binary (Universal Binary)
           NOTES_EOF
-            gh release create "$MAC_TAG" \
-              --title "Oximy macOS v${{ inputs.version_macos }}" \
-              $PRERELEASE_FLAG \
-              --notes-file /tmp/mac-notes.md \
-              "release-assets/macos/Oximy-${{ inputs.version_macos }}.dmg" \
-              "release-assets/macos/Oximy-${{ inputs.version_macos }}.pkg"
-            echo "Created macOS release: $MAC_TAG"
+              gh release create "$MAC_TAG" \
+                --title "Oximy macOS v${{ inputs.version_macos }}" \
+                $PRERELEASE_FLAG \
+                --notes-file /tmp/mac-notes.md \
+                "release-assets/macos/Oximy-${{ inputs.version_macos }}.dmg" \
+                "release-assets/macos/Oximy-${{ inputs.version_macos }}.pkg"
+              echo "Created macOS release: $MAC_TAG"
+            fi
           fi
 
           # Windows versioned release
           if [ "${{ needs.build-windows.result }}" = "success" ]; then
             WIN_TAG="oximy-win-v${{ inputs.version_windows }}"
-            cat > /tmp/win-notes.md << 'NOTES_EOF'
+            if gh release view "$WIN_TAG" >/dev/null 2>&1; then
+              echo "Release $WIN_TAG already exists — skipping creation (idempotent re-run)"
+            else
+              cat > /tmp/win-notes.md << 'NOTES_EOF'
           ## Windows v${{ inputs.version_windows }}
 
           ### Downloads
@@ -348,12 +355,14 @@ jobs:
 
           ${{ needs.preflight.outputs.changelog }}
           NOTES_EOF
-            gh release create "$WIN_TAG" \
-              --title "Oximy Windows v${{ inputs.version_windows }}" \
-              $PRERELEASE_FLAG \
-              --notes-file /tmp/win-notes.md \
-              release-assets/windows/*.exe
-            echo "Created Windows release: $WIN_TAG"
+              WIN_EXE=$(ls release-assets/windows/*.exe 2>/dev/null | head -1)
+              gh release create "$WIN_TAG" \
+                --title "Oximy Windows v${{ inputs.version_windows }}" \
+                $PRERELEASE_FLAG \
+                --notes-file /tmp/win-notes.md \
+                "$WIN_EXE"
+              echo "Created Windows release: $WIN_TAG"
+            fi
           fi
 
       - name: Update latest release
