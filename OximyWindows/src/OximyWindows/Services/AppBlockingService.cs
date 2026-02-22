@@ -98,7 +98,7 @@ public class AppBlockingService
 
     // ─── Fallback poll timer ──────────────────────────────────────────────────
 
-    private readonly HashSet<int> _knownPids = new();
+    private HashSet<int> _knownPids = new();
 
     private void StartFallbackTimer()
     {

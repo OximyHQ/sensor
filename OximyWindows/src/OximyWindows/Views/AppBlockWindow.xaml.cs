@@ -72,7 +72,7 @@ public partial class AppBlockWindow : Window
             var fileName = process?.MainModule?.FileName;
             if (fileName == null) return;
 
-            var icon = Icon.ExtractAssociatedIcon(fileName);
+            var icon = System.Drawing.Icon.ExtractAssociatedIcon(fileName);
             if (icon == null) return;
 
             using var bitmap = icon.ToBitmap();
