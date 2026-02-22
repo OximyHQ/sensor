@@ -37,7 +37,7 @@ final class AppBlockingService: ObservableObject {
             queue: .main
         ) { [weak self] notification in
             guard let rules = notification.object as? [EnforcementRule] else { return }
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.updateRules(rules)
             }
         }
@@ -49,7 +49,7 @@ final class AppBlockingService: ObservableObject {
             queue: .main
         ) { [weak self] notification in
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.handleAppLaunch(app)
             }
         }
